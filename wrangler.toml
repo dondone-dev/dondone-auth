@@ -2,9 +2,6 @@ name = "supabase-simple-auth"
 compatibility_date = "2026-06-10"
 pages_build_output_dir = "dist"
 
-# Configure this binding in the Cloudflare Pages dashboard or uncomment and
-# fill real namespace IDs for Wrangler-managed deployments.
-# [[kv_namespaces]]
-# binding = "AUTH_CODES"
-# id = "your-production-kv-namespace-id"
-# preview_id = "your-preview-kv-namespace-id"
+[[kv_namespaces]]
+binding = "AUTH_CODES" # simple-auth-codes
+id = "5e97806b185044c99c982330b88aba61"
