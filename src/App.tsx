@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
+  ArrowRight,
   Check,
   Copy,
   KeyRound,
@@ -8,10 +9,17 @@ import {
   RefreshCw,
   ShieldCheck,
   ShieldX,
+  TriangleAlert,
   UserRound,
 } from 'lucide-react'
 import { supabase } from './supabase'
 import { cn } from '@/lib/utils'
+import {
+  createAuthorizationRedirect,
+  hasAuthorizationParams,
+  originOf,
+  parseAuthorizationRequest,
+} from '@/lib/redirect'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -30,6 +38,7 @@ type Pending =
   | 'signIn'
   | 'getUser'
   | 'refreshSession'
+  | 'authorize'
   | 'signOut'
   | null
 
@@ -38,8 +47,15 @@ function App() {
   const [password, setPassword] = useState('')
   const [output, setOutput] = useState('')
   const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [userEmail, setUserEmail] = useState<string | null>(null)
   const [pending, setPending] = useState<Pending>(null)
   const [copied, setCopied] = useState(false)
+
+  // 来访时携带的授权请求参数。真正的 client/redirect 白名单由 /api/authorize 校验。
+  const [authorizationRequest] = useState(() => parseAuthorizationRequest())
+  const [authorizationRejected] = useState<boolean>(
+    () => hasAuthorizationParams() && parseAuthorizationRequest() === null
+  )
 
   const signedIn = accessToken !== null
 
@@ -60,16 +76,57 @@ function App() {
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => {
       setAccessToken(data.session?.access_token ?? null)
+      setUserEmail(data.session?.user.email ?? null)
     })
 
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
       setAccessToken(session?.access_token ?? null)
+      setUserEmail(session?.user.email ?? null)
     })
 
     return () => {
       data.subscription.unsubscribe()
     }
   }, [])
+
+  // 已登录用户携带授权请求到达时，换取一次性 code 后跳回目标应用。
+  async function continueAuthorization() {
+    if (!authorizationRequest) return
+    setPending('authorize')
+    const { data, error } = await supabase.auth.getSession()
+
+    if (error || !data.session) {
+      setPending(null)
+      setOutput(
+        JSON.stringify(
+          { ok: false, error: error?.message ?? 'No active session.' },
+          null,
+          2
+        )
+      )
+      return
+    }
+
+    try {
+      const redirectTo = await createAuthorizationRedirect(
+        authorizationRequest,
+        data.session
+      )
+      window.location.href = redirectTo
+    } catch (error) {
+      setPending(null)
+      setOutput(
+        JSON.stringify(
+          {
+            ok: false,
+            error: error instanceof Error ? error.message : 'Authorization failed.',
+          },
+          null,
+          2
+        )
+      )
+    }
+  }
 
   async function signUp() {
     setPending('signUp')
@@ -84,9 +141,36 @@ function App() {
       email,
       password,
     })
-    setPending(null)
     setAccessToken(data.session?.access_token ?? null)
+    setUserEmail(data.session?.user.email ?? null)
     setOutput(JSON.stringify({ data, error }, null, 2))
+
+    // 刚主动登录成功且带了有效授权请求，直接换取一次性 code 后返回。
+    // 保持 pending 状态直到跳转，避免兑换期间按钮可点导致重复提交。
+    if (data.session && authorizationRequest) {
+      try {
+        const redirectTo = await createAuthorizationRedirect(
+          authorizationRequest,
+          data.session
+        )
+        window.location.href = redirectTo
+        return
+      } catch (error) {
+        setOutput(
+          JSON.stringify(
+            {
+              ok: false,
+              error:
+                error instanceof Error ? error.message : 'Authorization failed.',
+            },
+            null,
+            2
+          )
+        )
+      }
+    }
+
+    setPending(null)
   }
 
   async function getUser() {
@@ -101,6 +185,7 @@ function App() {
     const { error } = await supabase.auth.signOut()
     setPending(null)
     setAccessToken(null)
+    setUserEmail(null)
     setOutput(JSON.stringify({ ok: !error, error }, null, 2))
   }
 
@@ -144,6 +229,46 @@ function App() {
             {signedIn ? '已登录' : '未登录'}
           </span>
         </header>
+
+        {authorizationRejected && (
+          <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <TriangleAlert className="size-4 shrink-0" />
+            授权请求参数不完整或回调地址无效，已忽略。请检查 client_id、redirect_uri 与 state。
+          </div>
+        )}
+
+        {authorizationRequest && !authorizationRejected && (
+          <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-sm text-muted-foreground">
+            登录后将返回{' '}
+            <strong className="text-foreground">
+              {originOf(authorizationRequest.redirectUri)}
+            </strong>
+          </div>
+        )}
+
+        {authorizationRequest && signedIn && (
+          <Card className="border-primary/30">
+            <CardHeader>
+              <CardTitle className="text-base">继续登录</CardTitle>
+              <CardDescription>
+                你已登录{userEmail ? `为 ${userEmail}` : ''}，可直接返回应用。
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button
+                className="w-full"
+                onClick={continueAuthorization}
+                disabled={pending === 'authorize'}
+              >
+                {pending === 'authorize' && (
+                  <RefreshCw className="size-4 animate-spin" />
+                )}
+                继续并返回 {originOf(authorizationRequest.redirectUri)}
+                <ArrowRight className="size-4" />
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardHeader>
