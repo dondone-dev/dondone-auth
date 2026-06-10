@@ -2,6 +2,11 @@ name = "supabase-simple-auth"
 compatibility_date = "2026-06-10"
 pages_build_output_dir = "dist"
 
+[vars]
+SUPABASE_URL = "https://ttmrvhkmqljulrptviow.supabase.co"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_5jnBwB84hcwhi2uwqPJQpQ_VBP161NF"
+AUTH_APPS_JSON = "{\"time\":{\"name\":\"Time\",\"redirectUris\":[\"https://time.dondone.dev/auth/callback\"]}}"
+
 [[kv_namespaces]]
 binding = "AUTH_CODES" # simple-auth-codes
 id = "5e97806b185044c99c982330b88aba61"
