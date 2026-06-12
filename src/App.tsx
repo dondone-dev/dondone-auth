@@ -165,7 +165,7 @@ function App() {
   async function signInWithPasskey() {
     setPending('passkeySignIn')
     try {
-      const { data, error } = await supabase.auth.signInWithPasskey({})
+      const { data, error } = await supabase.auth.passkey.signInWithPasskey({})
       if (error) throw error
       setAccessToken(data.session?.access_token ?? null)
       setUserEmail(data.session?.user.email ?? null)
@@ -191,7 +191,7 @@ function App() {
   async function enrollPasskey() {
     setPending('enrollPasskey')
     try {
-      const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'webauthn' })
+      const { data, error } = await supabase.auth.passkey.registerPasskey({})
       setOutput(JSON.stringify({ data, error }, null, 2))
     } catch (err) {
       setOutput(
