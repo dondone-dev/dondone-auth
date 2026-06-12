@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Check,
   Copy,
+  Fingerprint,
   KeyRound,
   LogOut,
   Mail,
@@ -36,6 +37,8 @@ import { Textarea } from '@/components/ui/textarea'
 type Pending =
   | 'signUp'
   | 'signIn'
+  | 'passkeySignIn'
+  | 'enrollPasskey'
   | 'getUser'
   | 'refreshSession'
   | 'authorize'
@@ -157,6 +160,49 @@ function App() {
       options: { redirectTo: window.location.href },
     })
     setOAuthPending(null)
+  }
+
+  async function signInWithPasskey() {
+    setPending('passkeySignIn')
+    try {
+      const { data, error } = await supabase.auth.signInWithPasskey({})
+      if (error) throw error
+      setAccessToken(data.session?.access_token ?? null)
+      setUserEmail(data.session?.user.email ?? null)
+      setOutput(JSON.stringify({ data, error }, null, 2))
+
+      if (data.session && authorizationRequest) {
+        const redirectTo = await createAuthorizationRedirect(authorizationRequest, data.session)
+        window.location.href = redirectTo
+        return
+      }
+    } catch (err) {
+      setOutput(
+        JSON.stringify(
+          { ok: false, error: err instanceof Error ? err.message : 'Passkey 登录失败。' },
+          null,
+          2
+        )
+      )
+    }
+    setPending(null)
+  }
+
+  async function enrollPasskey() {
+    setPending('enrollPasskey')
+    try {
+      const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'webauthn' })
+      setOutput(JSON.stringify({ data, error }, null, 2))
+    } catch (err) {
+      setOutput(
+        JSON.stringify(
+          { ok: false, error: err instanceof Error ? err.message : 'Passkey 绑定失败。' },
+          null,
+          2
+        )
+      )
+    }
+    setPending(null)
   }
 
   async function signUp() {
@@ -408,6 +454,20 @@ function App() {
                   Google
                 </Button>
               </div>
+
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={signInWithPasskey}
+                disabled={oauthPending !== null || pending !== null}
+              >
+                {pending === 'passkeySignIn' ? (
+                  <RefreshCw className="size-4 animate-spin" />
+                ) : (
+                  <Fingerprint className="size-4" />
+                )}
+                使用 Passkey 登录
+              </Button>
             </Tabs>
           </CardContent>
         </Card>
@@ -438,6 +498,20 @@ function App() {
               />
               获取 Session / JWT
             </Button>
+            {signedIn && (
+              <Button
+                variant="outline"
+                onClick={enrollPasskey}
+                disabled={pending === 'enrollPasskey'}
+              >
+                {pending === 'enrollPasskey' ? (
+                  <RefreshCw className="size-4 animate-spin" />
+                ) : (
+                  <Fingerprint className="size-4" />
+                )}
+                绑定 Passkey
+              </Button>
+            )}
             <Button
               variant="destructive"
               onClick={signOut}
