@@ -60,8 +60,16 @@ DONDONE_API_AUDIENCE
 Generate an ES256 private JWK and write it to a Cloudflare Pages secret:
 
 ```bash
-node -e "crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']).then(k=>crypto.subtle.exportKey('jwk',k.privateKey)).then(jwk=>console.log(JSON.stringify(jwk)))" | pnpm wrangler pages secret put DONDONE_JWT_PRIVATE_JWK --project-name supabase-simple-auth
+node -e "crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']).then(k=>crypto.subtle.exportKey('jwk',k.privateKey)).then(jwk=>console.log(JSON.stringify(jwk)))" | pnpm wrangler pages secret put DONDONE_JWT_PRIVATE_JWK --project-name dondone-auth
 ```
+
+If you already have a private JWK value (e.g. restoring an existing key), pipe it directly instead:
+
+```bash
+echo '{"kty":"EC","crv":"P-256","x":"...","y":"...","d":"..."}' | pnpm wrangler pages secret put DONDONE_JWT_PRIVATE_JWK --project-name dondone-auth
+```
+
+The `d` field is the private key itself — only ever pipe it into `wrangler pages secret put`. Never commit it or print it in CI logs.
 
 For local development, put Functions variables in `.dev.vars` and frontend variables in `.env.local`.
 

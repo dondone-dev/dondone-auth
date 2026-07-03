@@ -58,8 +58,16 @@ DONDONE_API_AUDIENCE
 生成 ES256 private JWK 并写入 Cloudflare Pages secret：
 
 ```bash
-node -e "crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']).then(k=>crypto.subtle.exportKey('jwk',k.privateKey)).then(jwk=>console.log(JSON.stringify(jwk)))" | pnpm wrangler pages secret put DONDONE_JWT_PRIVATE_JWK --project-name supabase-simple-auth
+node -e "crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']).then(k=>crypto.subtle.exportKey('jwk',k.privateKey)).then(jwk=>console.log(JSON.stringify(jwk)))" | pnpm wrangler pages secret put DONDONE_JWT_PRIVATE_JWK --project-name dondone-auth
 ```
+
+如果已经有现成的 private JWK 值（例如恢复已有密钥），也可以通过管道直接写入，例如：
+
+```bash
+echo '{"kty":"EC","crv":"P-256","x":"...","y":"...","d":"..."}' | pnpm wrangler pages secret put DONDONE_JWT_PRIVATE_JWK --project-name dondone-auth
+```
+
+`d` 字段就是私钥本身，只应通过 `wrangler pages secret put` 写入，不要提交到仓库、不要打印到 CI 日志。
 
 本地开发：Functions 变量写入 `.dev.vars`，前端变量写入 `.env.local`。
 
