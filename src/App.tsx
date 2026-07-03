@@ -34,12 +34,16 @@ import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 
+const API_BASE =
+  (import.meta.env.VITE_API_BASE as string | undefined) ?? 'https://api.dondone.dev'
+
 type Pending =
   | 'signUp'
   | 'signIn'
   | 'passkeySignIn'
   | 'enrollPasskey'
   | 'getUser'
+  | 'apiEcho'
   | 'refreshSession'
   | 'authorize'
   | 'signOut'
@@ -255,6 +259,44 @@ function App() {
     const { data, error } = await supabase.auth.getUser()
     setPending(null)
     setOutput(JSON.stringify({ data, error }, null, 2))
+  }
+
+  async function callApiEcho() {
+    if (!accessToken) return
+    setPending('apiEcho')
+    try {
+      const tokenResponse = await fetch('/api/api-token', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+      const tokenBody = (await tokenResponse.json()) as {
+        api_access_token?: string
+        error?: string
+        message?: string
+      }
+
+      if (!tokenResponse.ok || !tokenBody.api_access_token) {
+        throw new Error(tokenBody.message ?? tokenBody.error ?? 'API token failed.')
+      }
+
+      const echoResponse = await fetch(`${API_BASE}/echo`, {
+        headers: { Authorization: `Bearer ${tokenBody.api_access_token}` },
+      })
+      const echoBody = await echoResponse.json()
+      setOutput(JSON.stringify(echoBody, null, 2))
+    } catch (error) {
+      setOutput(
+        JSON.stringify(
+          {
+            ok: false,
+            error: error instanceof Error ? error.message : 'API Echo failed.',
+          },
+          null,
+          2
+        )
+      )
+    }
+    setPending(null)
   }
 
   async function signOut() {
@@ -510,6 +552,20 @@ function App() {
                   <Fingerprint className="size-4" />
                 )}
                 绑定 Passkey
+              </Button>
+            )}
+            {signedIn && (
+              <Button
+                variant="outline"
+                onClick={callApiEcho}
+                disabled={pending === 'apiEcho'}
+              >
+                {pending === 'apiEcho' ? (
+                  <RefreshCw className="size-4 animate-spin" />
+                ) : (
+                  <ShieldCheck className="size-4" />
+                )}
+                API Echo 验证
               </Button>
             )}
             <Button

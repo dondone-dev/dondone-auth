@@ -19,7 +19,16 @@ class MemoryKV {
   }
 }
 
-function env(): AuthEnv {
+async function testPrivateJwk(): Promise<string> {
+  const keyPair = await crypto.subtle.generateKey(
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    true,
+    ['sign', 'verify']
+  )
+  return JSON.stringify(await crypto.subtle.exportKey('jwk', keyPair.privateKey))
+}
+
+async function env(): Promise<AuthEnv> {
   return {
     AUTH_CODES: new MemoryKV() as unknown as KVNamespace,
     AUTH_APPS_JSON: JSON.stringify({
@@ -30,6 +39,10 @@ function env(): AuthEnv {
     }),
     SUPABASE_URL: 'https://project.supabase.co',
     SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
+    DONDONE_JWT_PRIVATE_JWK: await testPrivateJwk(),
+    DONDONE_JWT_KID: 'test-key',
+    DONDONE_JWT_ISSUER: 'https://auth.dondone.dev',
+    DONDONE_API_AUDIENCE: 'https://api.dondone.dev',
   }
 }
 
@@ -53,7 +66,7 @@ describe('POST /api/authorize', () => {
           token_type: 'bearer',
         }),
       }),
-      env(),
+      await env(),
       verify
     )
 
@@ -83,7 +96,7 @@ describe('POST /api/authorize', () => {
           token_type: 'bearer',
         }),
       }),
-      env(),
+      await env(),
       async () => ({ id: 'user-123' })
     )
 
@@ -105,7 +118,7 @@ describe('POST /api/authorize', () => {
           token_type: 'bearer',
         }),
       }),
-      env(),
+      await env(),
       async () => {
         throw new ApiError(401, 'invalid_token', 'Supabase access token is invalid.')
       }

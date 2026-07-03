@@ -1,5 +1,6 @@
 import { requireRegisteredApp } from '../lib/apps'
 import { consumeAuthorizationCode } from '../lib/codes'
+import { signDondoneApiToken } from '../lib/dondone-jwt'
 import { ApiError } from '../lib/errors'
 import { verifyPkce } from '../lib/pkce'
 import {
@@ -38,8 +39,13 @@ export async function handleToken(
     }
 
     await verifyPkce(record.codeChallenge, codeVerifier)
+    const apiToken = await signDondoneApiToken(
+      env,
+      { id: record.userId, email: record.userEmail },
+      clientId
+    )
 
-    return jsonResponse(request, env, record.session)
+    return jsonResponse(request, env, { ...record.session, ...apiToken })
   } catch (error) {
     return errorResponse(request, env, error)
   }

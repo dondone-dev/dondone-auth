@@ -3,6 +3,10 @@ export interface AuthEnv {
   AUTH_APPS_JSON: string
   SUPABASE_URL: string
   SUPABASE_PUBLISHABLE_KEY: string
+  DONDONE_JWT_PRIVATE_JWK: string
+  DONDONE_JWT_KID: string
+  DONDONE_JWT_ISSUER: string
+  DONDONE_API_AUDIENCE: string
 }
 
 export interface AuthApp {
@@ -30,5 +34,6 @@ export interface AuthorizationCodeRecord {
   state: string
   codeChallenge: string
   userId: string
+  userEmail?: string
   session: SupabaseSessionPayload
 }

@@ -46,6 +46,7 @@ export async function handleAuthorize(
       state,
       codeChallenge,
       userId: user.id,
+      userEmail: user.email,
       session: {
         access_token: accessToken,
         refresh_token: refreshToken,
