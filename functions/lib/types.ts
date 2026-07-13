@@ -1,6 +1,7 @@
 export interface AuthEnv {
   AUTH_CODES: KVNamespace
   AUTH_APPS_JSON: string
+  SERVICE_REGISTRY_SOURCE?: 'static' | 'db'
   SUPABASE_URL: string
   SUPABASE_PUBLISHABLE_KEY: string
   DONDONE_JWT_PRIVATE_JWK: string
@@ -15,6 +16,7 @@ export interface AuthApp {
 }
 
 export type AuthAppRegistry = Record<string, AuthApp>
+export type ServiceRegistry = AuthAppRegistry
 
 export interface SupabaseUser {
   id: string
