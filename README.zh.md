@@ -41,15 +41,18 @@ VITE_API_BASE
 
 **Pages Functions**
 
-```
+```sh
 SUPABASE_URL
 SUPABASE_PUBLISHABLE_KEY
-AUTH_APPS_JSON   # 注册的业务应用列表，含 client_id 与白名单 redirect_uri
+AUTH_APPS_JSON   # static 模式使用的业务应用列表，含 client_id 与白名单 redirect_uri
+SERVICE_REGISTRY_SOURCE   # 未设置/static 读取 AUTH_APPS_JSON；db 读取 oauth_client_registry
 DONDONE_JWT_PRIVATE_JWK   # ES256 private JWK，使用 Cloudflare secret 配置
 DONDONE_JWT_KID
 DONDONE_JWT_ISSUER
 DONDONE_API_AUDIENCE
 ```
+
+`SERVICE_REGISTRY_SOURCE` 只接受 `static` 或 `db`：未设置或设为 `static` 时读取 `AUTH_APPS_JSON`；设为 `db` 时读取由 Dondone Console 管理的 Supabase `public.oauth_client_registry` 视图。其他值会返回 `invalid_registry_source`。这是人工控制的切换，不是自动回退；`db` 模式下数据库读取失败时，请求直接失败，不会静默改用静态注册表。
 
 **KV Binding**：`AUTH_CODES`
 

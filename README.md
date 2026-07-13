@@ -45,13 +45,14 @@ VITE_API_BASE
 SUPABASE_URL
 SUPABASE_PUBLISHABLE_KEY
 AUTH_APPS_JSON
+SERVICE_REGISTRY_SOURCE
 DONDONE_JWT_PRIVATE_JWK
 DONDONE_JWT_KID
 DONDONE_JWT_ISSUER
 DONDONE_API_AUDIENCE
 ```
 
-`AUTH_APPS_JSON` stores registered client apps, including `client_id` and allowed `redirect_uri` values.
+`AUTH_APPS_JSON` stores registered client apps, including `client_id` and allowed `redirect_uri` values. `SERVICE_REGISTRY_SOURCE` selects where the registry is read from: unset or `static` reads `AUTH_APPS_JSON`; `db` reads the Supabase `public.oauth_client_registry` view instead, which is managed from the Dondone Console's Services page. Any other value is a configuration error (`invalid_registry_source`). This is a human-controlled switch, not an automatic fallback — a database read failure while set to `db` fails the request rather than silently reverting to `static`.
 
 **KV Binding**: `AUTH_CODES`
 
