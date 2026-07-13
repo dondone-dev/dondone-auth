@@ -7,8 +7,8 @@ import {
   requireNumber,
   requireString,
 } from '../lib/http'
-import { requireRegisteredApp } from '../lib/apps'
 import { assertSupportedPkceMethod } from '../lib/pkce'
+import { assertRegisteredService, loadServiceRegistry } from '../lib/services'
 import { getSupabaseUser } from '../lib/supabase'
 import type { AuthEnv, SupabaseUser } from '../lib/types'
 
@@ -38,7 +38,8 @@ export async function handleAuthorize(
         ? body.code_challenge_method
         : undefined
     )
-    requireRegisteredApp(env, clientId, redirectUri)
+    const registry = await loadServiceRegistry(env)
+    assertRegisteredService(registry, clientId, redirectUri)
     const user = await verifyAccessToken(env, accessToken)
     const code = await createAuthorizationCode(env.AUTH_CODES, {
       clientId,

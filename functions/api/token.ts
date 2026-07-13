@@ -1,4 +1,3 @@
-import { requireRegisteredApp } from '../lib/apps'
 import { consumeAuthorizationCode } from '../lib/codes'
 import { signDondoneApiToken } from '../lib/dondone-jwt'
 import { ApiError } from '../lib/errors'
@@ -10,6 +9,7 @@ import {
   readJsonObject,
   requireString,
 } from '../lib/http'
+import { assertRegisteredService, loadServiceRegistry } from '../lib/services'
 import type { AuthEnv } from '../lib/types'
 
 export async function handleToken(
@@ -23,7 +23,8 @@ export async function handleToken(
     const code = requireString(body, 'code')
     const codeVerifier = requireString(body, 'code_verifier')
 
-    requireRegisteredApp(env, clientId, redirectUri)
+    const registry = await loadServiceRegistry(env)
+    assertRegisteredService(registry, clientId, redirectUri)
     // 先消费 code：无论后续校验是否通过，code 都立即失效，保证单次使用。
     const record = await consumeAuthorizationCode(env.AUTH_CODES, code)
     if (!record) {

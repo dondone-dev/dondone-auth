@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { importJWK, jwtVerify } from 'jose'
 import { createAuthorizationCode } from '../lib/codes'
 import { computeS256Challenge } from '../lib/pkce'
@@ -51,7 +51,22 @@ async function env(kv: KVNamespace): Promise<AuthEnv> {
   }
 }
 
+class FakeCache {
+  private store = new Map<string, Response>()
+  async match(request: Request) {
+    const stored = this.store.get(request.url)
+    return stored ? stored.clone() : undefined
+  }
+  async put(request: Request, response: Response) {
+    this.store.set(request.url, response.clone())
+  }
+}
+
 describe('POST /api/token', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('exchanges a code once for a Supabase session and Dondone API token', async () => {
     const kv = new MemoryKV() as unknown as KVNamespace
     const testEnv = await env(kv)
@@ -221,5 +236,50 @@ describe('POST /api/token', () => {
     )
 
     expect(response.status).toBe(403)
+  })
+
+  it('exchanges a code when SERVICE_REGISTRY_SOURCE is "db"', async () => {
+    const kv = new MemoryKV() as unknown as KVNamespace
+    const code = await createAuthorizationCode(kv, {
+      clientId: 'time',
+      redirectUri: 'https://time.dondone.dev/auth/callback',
+      state: 'state-123',
+      codeChallenge: await computeS256Challenge(CODE_VERIFIER),
+      userId: 'user-123',
+      session: {
+        access_token: 'access-token',
+        refresh_token: 'refresh-token',
+        expires_at: 123,
+        token_type: 'bearer',
+      },
+    })
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify([
+            { key: 'time', name: 'Local Time', redirect_uris: ['https://time.dondone.dev/auth/callback'] },
+          ]),
+          { status: 200 }
+        )
+      )
+    )
+    vi.stubGlobal('caches', { default: new FakeCache() })
+
+    const response = await handleToken(
+      new Request('https://auth.dondone.dev/api/token', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: 'time',
+          redirect_uri: 'https://time.dondone.dev/auth/callback',
+          code,
+          code_verifier: CODE_VERIFIER,
+        }),
+      }),
+      { ...(await env(kv)), SERVICE_REGISTRY_SOURCE: 'db' }
+    )
+
+    expect(response.status).toBe(200)
   })
 })

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { handleAuthorize } from './authorize'
 import { ApiError } from '../lib/errors'
 import type { AuthEnv, SupabaseUser } from '../lib/types'
@@ -46,7 +46,22 @@ async function env(): Promise<AuthEnv> {
   }
 }
 
+class FakeCache {
+  private store = new Map<string, Response>()
+  async match(request: Request) {
+    const stored = this.store.get(request.url)
+    return stored ? stored.clone() : undefined
+  }
+  async put(request: Request, response: Response) {
+    this.store.set(request.url, response.clone())
+  }
+}
+
 describe('POST /api/authorize', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('returns a redirect URL with only code and state for a valid session', async () => {
     const verify = async (): Promise<SupabaseUser> => ({
       id: 'user-123',
@@ -125,5 +140,65 @@ describe('POST /api/authorize', () => {
     )
 
     expect(response.status).toBe(401)
+  })
+
+  it('validates client_id/redirect_uri against the db-mode registry when SERVICE_REGISTRY_SOURCE is "db"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify([
+            { key: 'time', name: 'Local Time', redirect_uris: ['https://time.dondone.dev/auth/callback'] },
+          ]),
+          { status: 200 }
+        )
+      )
+    )
+    vi.stubGlobal('caches', { default: new FakeCache() })
+
+    const response = await handleAuthorize(
+      new Request('https://auth.dondone.dev/api/authorize', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: 'time',
+          redirect_uri: 'https://time.dondone.dev/auth/callback',
+          state: 'state-123',
+          code_challenge: 'challenge-123',
+          access_token: 'access-token',
+          refresh_token: 'refresh-token',
+          expires_at: 123,
+          token_type: 'bearer',
+        }),
+      }),
+      { ...(await env()), SERVICE_REGISTRY_SOURCE: 'db' },
+      async () => ({ id: 'user-123', email: 'user@example.com' })
+    )
+
+    expect(response.status).toBe(200)
+  })
+
+  it('rejects a client not present in the db-mode registry', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })))
+    vi.stubGlobal('caches', { default: new FakeCache() })
+
+    const response = await handleAuthorize(
+      new Request('https://auth.dondone.dev/api/authorize', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: 'time',
+          redirect_uri: 'https://time.dondone.dev/auth/callback',
+          state: 'state-123',
+          code_challenge: 'challenge-123',
+          access_token: 'access-token',
+          refresh_token: 'refresh-token',
+          expires_at: 123,
+          token_type: 'bearer',
+        }),
+      }),
+      { ...(await env()), SERVICE_REGISTRY_SOURCE: 'db' },
+      async () => ({ id: 'user-123' })
+    )
+
+    expect(response.status).toBe(403)
   })
 })
