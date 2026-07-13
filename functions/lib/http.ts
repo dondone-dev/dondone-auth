@@ -1,26 +1,26 @@
-import { parseAuthApps } from './apps'
 import { ApiError } from './errors'
+import { loadServiceRegistry } from './services'
 import type { AuthEnv } from './types'
 
 export { ApiError }
 
-export function jsonResponse(
+export async function jsonResponse(
   request: Request,
   env: AuthEnv,
   data: unknown,
   init: ResponseInit = {}
-): Response {
+): Promise<Response> {
   return new Response(JSON.stringify(data), {
     ...init,
-    headers: responseHeaders(request, env, init.headers),
+    headers: await responseHeaders(request, env, init.headers),
   })
 }
 
-export function errorResponse(
+export async function errorResponse(
   request: Request,
   env: AuthEnv,
   error: unknown
-): Response {
+): Promise<Response> {
   if (error instanceof ApiError) {
     return jsonResponse(
       request,
@@ -77,10 +77,10 @@ export function requireNumber(
   return value
 }
 
-export function handleOptions(request: Request, env: AuthEnv): Response {
+export async function handleOptions(request: Request, env: AuthEnv): Promise<Response> {
   return new Response(null, {
     status: 204,
-    headers: responseHeaders(request, env, {
+    headers: await responseHeaders(request, env, {
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
       'Access-Control-Allow-Headers': 'authorization,content-type',
       'Access-Control-Max-Age': '600',
@@ -88,27 +88,27 @@ export function handleOptions(request: Request, env: AuthEnv): Response {
   })
 }
 
-function responseHeaders(
+async function responseHeaders(
   request: Request,
   env: AuthEnv,
   extra?: HeadersInit
-): Headers {
+): Promise<Headers> {
   const headers = new Headers(extra)
   headers.set('Content-Type', headers.get('Content-Type') ?? 'application/json')
   headers.set('Cache-Control', 'no-store')
   headers.set('Vary', appendVary(headers.get('Vary'), 'Origin'))
 
   const origin = request.headers.get('Origin')
-  if (origin && isAllowedOrigin(env, origin)) {
+  if (origin && (await isAllowedOrigin(env, origin))) {
     headers.set('Access-Control-Allow-Origin', origin)
   }
 
   return headers
 }
 
-function isAllowedOrigin(env: AuthEnv, origin: string): boolean {
+async function isAllowedOrigin(env: AuthEnv, origin: string): Promise<boolean> {
   try {
-    const registry = parseAuthApps(env.AUTH_APPS_JSON)
+    const registry = await loadServiceRegistry(env)
     return Object.values(registry).some((app) =>
       app.redirectUris.some((redirectUri) => new URL(redirectUri).origin === origin)
     )
