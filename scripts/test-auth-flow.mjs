@@ -8,10 +8,12 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { createInterface } from 'node:readline'
 
-// ── 配置（与 .dev.vars 里的 AUTH_APPS_JSON 保持一致） ──────────────────────
+// ── 配置（client/redirect URI 必须已登记到 oauth_client_registry） ─────────
 const BASE = 'http://localhost:8788'
 const CLIENT_ID = 'myapp'
 const REDIRECT_URI = 'http://localhost:3001/auth/callback'
+const RESOURCE = 'https://api.dondone.dev'
+const SCOPE = 'api:echo'
 // ───────────────────────────────────────────────────────────────────────────
 
 function base64url(buffer) {
@@ -35,6 +37,8 @@ loginUrl.searchParams.set('redirect_uri', REDIRECT_URI)
 loginUrl.searchParams.set('state', state)
 loginUrl.searchParams.set('code_challenge', codeChallenge)
 loginUrl.searchParams.set('code_challenge_method', 'S256')
+loginUrl.searchParams.set('resource', RESOURCE)
+loginUrl.searchParams.set('scope', SCOPE)
 
 console.log('─'.repeat(60))
 console.log('state:         ', state)
@@ -86,6 +90,8 @@ rl.question('② 登录后浏览器会跳转到回调地址（会报连接错误
       redirect_uri: REDIRECT_URI,
       code,
       code_verifier: codeVerifier,
+      resource: RESOURCE,
+      scope: SCOPE,
     }),
   })
 
@@ -111,6 +117,8 @@ rl.question('② 登录后浏览器会跳转到回调地址（会报连接错误
       redirect_uri: REDIRECT_URI,
       code,
       code_verifier: codeVerifier,
+      resource: RESOURCE,
+      scope: SCOPE,
     }),
   })
 

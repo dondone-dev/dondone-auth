@@ -4,11 +4,7 @@ import {
   jsonResponse,
   readJsonObject,
 } from '../lib/http'
-import {
-  isResourceTokensEnabled,
-  signDondoneAccessToken,
-  signDondoneApiToken,
-} from '../lib/dondone-jwt'
+import { signDondoneAccessToken } from '../lib/dondone-jwt'
 import { ApiError } from '../lib/errors'
 import { loadApprovedScopes, validateRequestedScopes } from '../lib/services'
 import { getSupabaseUser } from '../lib/supabase'
@@ -33,14 +29,10 @@ export async function handleApiToken(
 
     const user = await verifyAccessToken(env, accessToken)
 
-    if (!isResourceTokensEnabled(env)) {
-      return jsonResponse(request, env, await signDondoneApiToken(env, user, 'auth'))
-    }
-
     const body = await readJsonObject(request)
     const resource = body.resource
     if (typeof resource !== 'string' || resource.trim() === '') {
-      throw new ApiError(400, 'invalid_target', 'resource parameter is required when resource tokens are enabled.')
+      throw new ApiError(400, 'invalid_target', 'resource parameter is required.')
     }
 
     if (Array.isArray(body.scope) && !body.scope.every((scope) => typeof scope === 'string')) {
@@ -53,7 +45,7 @@ export async function handleApiToken(
         : []
 
     if (requestedScopes.length === 0) {
-      throw new ApiError(400, 'invalid_scope', 'A non-empty scope is required when resource tokens are enabled.')
+      throw new ApiError(400, 'invalid_scope', 'A non-empty scope is required.')
     }
 
     const { scopes: approvedScopes } = await loadApprovedScopes(env, resource)

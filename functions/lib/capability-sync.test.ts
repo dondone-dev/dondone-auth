@@ -7,14 +7,12 @@ import { manifestSha256, parseCapabilityManifest } from './capability-manifest'
 function mockEnv(): AuthEnv {
   return {
     AUTH_CODES: {} as KVNamespace,
-    AUTH_APPS_JSON: '{}',
     SUPABASE_URL: 'https://test.supabase.co',
     SUPABASE_PUBLISHABLE_KEY: 'anon-key',
     SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
     DONDONE_JWT_PRIVATE_JWK: '{}',
     DONDONE_JWT_KID: 'kid',
     DONDONE_JWT_ISSUER: 'https://auth.dondone.dev',
-    DONDONE_API_AUDIENCE: 'https://api.dondone.dev',
   }
 }
 

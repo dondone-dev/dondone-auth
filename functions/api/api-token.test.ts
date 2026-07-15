@@ -22,12 +22,6 @@ async function env(): Promise<AuthEnv> {
   )
   return {
     AUTH_CODES: new MemoryKV() as unknown as KVNamespace,
-    AUTH_APPS_JSON: JSON.stringify({
-      time: {
-        name: 'Time',
-        redirectUris: ['https://time.dondone.dev/auth/callback'],
-      },
-    }),
     SUPABASE_URL: 'https://project.supabase.co',
     SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
     DONDONE_JWT_PRIVATE_JWK: JSON.stringify(
@@ -35,12 +29,27 @@ async function env(): Promise<AuthEnv> {
     ),
     DONDONE_JWT_KID: 'test-key',
     DONDONE_JWT_ISSUER: 'https://auth.dondone.dev',
-    DONDONE_API_AUDIENCE: 'https://api.dondone.dev',
   }
 }
 
 describe('POST /api/api-token', () => {
   afterEach(() => vi.unstubAllGlobals())
+
+  it('requires resource and scope without a rollout flag', async () => {
+    const response = await handleApiToken(
+      new Request('https://auth.dondone.dev/api/api-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer supabase-token' },
+        body: JSON.stringify({}),
+      }),
+      await env(),
+      async () => ({ id: 'user-123' })
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'invalid_target' })
+  })
+
   it('rejects requests without a Supabase bearer token', async () => {
     const response = await handleApiToken(
       new Request('https://auth.dondone.dev/api/api-token', { method: 'POST' }),
@@ -55,8 +64,11 @@ describe('POST /api/api-token', () => {
     })
   })
 
-  it('signs a Dondone API JWT for a verified Supabase user', async () => {
+  it('signs a resource-bound Dondone API JWT for a verified Supabase user', async () => {
     const testEnv = await env()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
+      { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
+    ]))))
     const user: SupabaseUser = {
       id: 'user-123',
       email: 'user@example.com',
@@ -65,6 +77,7 @@ describe('POST /api/api-token', () => {
       new Request('https://auth.dondone.dev/api/api-token', {
         method: 'POST',
         headers: { Authorization: 'Bearer supabase-token' },
+        body: JSON.stringify({ resource: 'https://api.dondone.dev', scope: 'api:echo' }),
       }),
       testEnv,
       async () => user
@@ -82,7 +95,7 @@ describe('POST /api/api-token', () => {
     const key = await importJWK(jwks.keys[0], 'ES256')
     const verified = await jwtVerify(body.api_access_token, key, {
       issuer: testEnv.DONDONE_JWT_ISSUER,
-      audience: testEnv.DONDONE_API_AUDIENCE,
+      audience: 'https://api.dondone.dev',
     })
 
     expect(response.status).toBe(200)
@@ -92,12 +105,13 @@ describe('POST /api/api-token', () => {
     expect(verified.payload.email).toBe(user.email)
     expect(verified.payload.client_id).toBe('auth')
     expect(verified.payload.scope).toBe('api:echo')
+    expect(verified.protectedHeader.typ).toBe('at+jwt')
   })
 
   it('rejects malformed JSON when resource tokens are enabled', async () => {
     const response = await handleApiToken(new Request('https://auth.dondone.dev/api/api-token', {
       method: 'POST', headers: { Authorization: 'Bearer token' }, body: '{',
-    }), { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }, async () => ({ id: 'user' }))
+    }), await env(), async () => ({ id: 'user' }))
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: 'invalid_json' })
   })
@@ -106,7 +120,7 @@ describe('POST /api/api-token', () => {
     const response = await handleApiToken(new Request('https://auth.dondone.dev/api/api-token', {
       method: 'POST', headers: { Authorization: 'Bearer token' },
       body: JSON.stringify({ resource: 'https://api.dondone.dev', scope: ['api:echo', 42] }),
-    }), { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }, async () => ({ id: 'user' }))
+    }), await env(), async () => ({ id: 'user' }))
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: 'invalid_scope' })
   })
@@ -115,13 +129,13 @@ describe('POST /api/api-token', () => {
     const response = await handleApiToken(new Request('https://auth.dondone.dev/api/api-token', {
       method: 'POST', headers: { Authorization: 'Bearer token' },
       body: JSON.stringify({ resource: 'https://api.dondone.dev' }),
-    }), { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }, async () => ({ id: 'user' }))
+    }), await env(), async () => ({ id: 'user' }))
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: 'invalid_scope' })
   })
 
   it('mints a resource JWT with exact aud, typ and requested scope', async () => {
-    const testEnv = { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
+    const testEnv = await env()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
       { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
       { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:read' },

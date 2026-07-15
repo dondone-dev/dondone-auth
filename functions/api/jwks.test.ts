@@ -20,7 +20,6 @@ async function env(): Promise<AuthEnv> {
   )
   return {
     AUTH_CODES: new MemoryKV() as unknown as KVNamespace,
-    AUTH_APPS_JSON: '{}',
     SUPABASE_URL: 'https://project.supabase.co',
     SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
     DONDONE_JWT_PRIVATE_JWK: JSON.stringify(
@@ -28,7 +27,6 @@ async function env(): Promise<AuthEnv> {
     ),
     DONDONE_JWT_KID: 'test-key',
     DONDONE_JWT_ISSUER: 'https://auth.dondone.dev',
-    DONDONE_API_AUDIENCE: 'https://api.dondone.dev',
   }
 }
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { importJWK, jwtVerify } from 'jose'
 import { createAuthorizationCode } from '../lib/codes'
 import { computeS256Challenge } from '../lib/pkce'
@@ -36,18 +36,11 @@ async function testPrivateJwk(): Promise<string> {
 async function env(kv: KVNamespace): Promise<AuthEnv> {
   return {
     AUTH_CODES: kv,
-    AUTH_APPS_JSON: JSON.stringify({
-      time: {
-        name: 'Time',
-        redirectUris: ['https://time.dondone.dev/auth/callback'],
-      },
-    }),
     SUPABASE_URL: 'https://project.supabase.co',
     SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
     DONDONE_JWT_PRIVATE_JWK: await testPrivateJwk(),
     DONDONE_JWT_KID: 'test-key',
     DONDONE_JWT_ISSUER: 'https://auth.dondone.dev',
-    DONDONE_API_AUDIENCE: 'https://api.dondone.dev',
   }
 }
 
@@ -62,7 +55,30 @@ class FakeCache {
   }
 }
 
+const clientRows = [
+  { key: 'time', name: 'Local Time', redirect_uris: ['https://time.dondone.dev/auth/callback'] },
+]
+const capabilityRows = [
+  { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
+]
+
+function stubRegistryFetch(options: {
+  clients?: unknown[]
+  capabilities?: unknown[]
+} = {}) {
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = String(input)
+    const rows = url.includes('oauth_client_registry')
+      ? (options.clients ?? clientRows)
+      : (options.capabilities ?? capabilityRows)
+    return new Response(JSON.stringify(rows), { status: 200 })
+  }))
+  vi.stubGlobal('caches', { default: new FakeCache() })
+}
+
 describe('POST /api/token', () => {
+  beforeEach(() => stubRegistryFetch())
+
   afterEach(() => {
     vi.unstubAllGlobals()
   })
@@ -83,6 +99,8 @@ describe('POST /api/token', () => {
       codeChallenge: await computeS256Challenge(CODE_VERIFIER),
       userId: 'user-123',
       userEmail: 'user@example.com',
+      resource: 'https://api.dondone.dev',
+      scopes: ['api:echo'],
       session,
     }
     const code = await createAuthorizationCode(kv, record)
@@ -113,7 +131,7 @@ describe('POST /api/token', () => {
     const key = await importJWK(jwks.keys[0], 'ES256')
     const verified = await jwtVerify(body.api_access_token, key, {
       issuer: testEnv.DONDONE_JWT_ISSUER,
-      audience: testEnv.DONDONE_API_AUDIENCE,
+      audience: 'https://api.dondone.dev',
     })
 
     expect(response.status).toBe(200)
@@ -130,7 +148,7 @@ describe('POST /api/token', () => {
     expect(secondResponse.status).toBe(410)
   })
 
-  it('rejects a legacy authorization code when resource tokens are enabled', async () => {
+  it('rejects an authorization code without a resource in the final strict mode', async () => {
     const kv = new MemoryKV() as unknown as KVNamespace
     const code = await createAuthorizationCode(kv, {
       clientId: 'time', redirectUri: 'https://time.dondone.dev/auth/callback', state: 'state',
@@ -139,10 +157,45 @@ describe('POST /api/token', () => {
     })
     const response = await handleToken(new Request('https://auth.dondone.dev/api/token', {
       method: 'POST', body: JSON.stringify({ client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', code, code_verifier: CODE_VERIFIER }),
-    }), { ...(await env(kv)), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' })
+    }), await env(kv))
 
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: 'invalid_target' })
+  })
+
+  it('rejects an authorization code without a non-empty bound scope', async () => {
+    const kv = new MemoryKV() as unknown as KVNamespace
+    const code = await createAuthorizationCode(kv, {
+      clientId: 'time', redirectUri: 'https://time.dondone.dev/auth/callback', state: 'state',
+      codeChallenge: await computeS256Challenge(CODE_VERIFIER), userId: 'user-123',
+      resource: 'https://api.dondone.dev',
+      session: { access_token: 'a', refresh_token: 'r', expires_at: 123, token_type: 'bearer' },
+    })
+    const response = await handleToken(new Request('https://auth.dondone.dev/api/token', {
+      method: 'POST', body: JSON.stringify({ client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', code, code_verifier: CODE_VERIFIER }),
+    }), await env(kv))
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'invalid_scope' })
+  })
+
+  it('rejects an explicitly empty token-exchange scope', async () => {
+    const kv = new MemoryKV() as unknown as KVNamespace
+    const code = await createAuthorizationCode(kv, {
+      clientId: 'time', redirectUri: 'https://time.dondone.dev/auth/callback', state: 'state',
+      codeChallenge: await computeS256Challenge(CODE_VERIFIER), userId: 'user-123',
+      resource: 'https://api.dondone.dev', scopes: ['api:echo'],
+      session: { access_token: 'a', refresh_token: 'r', expires_at: 123, token_type: 'bearer' },
+    })
+    const response = await handleToken(new Request('https://auth.dondone.dev/api/token', {
+      method: 'POST', body: JSON.stringify({
+        client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', code,
+        code_verifier: CODE_VERIFIER, scope: '   ',
+      }),
+    }), await env(kv))
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'invalid_scope' })
   })
 
   it('rejects switching the resource bound to an authorization code', async () => {
@@ -158,7 +211,7 @@ describe('POST /api/token', () => {
         client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', code,
         code_verifier: CODE_VERIFIER, resource: 'https://ai.dondone.dev',
       }),
-    }), { ...(await env(kv)), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' })
+    }), await env(kv))
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: 'invalid_target' })
   })
@@ -176,18 +229,18 @@ describe('POST /api/token', () => {
         client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', code,
         code_verifier: CODE_VERIFIER, resource: 'https://api.dondone.dev', scope: 'api:read',
       }),
-    }), { ...(await env(kv)), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' })
+    }), await env(kv))
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: 'invalid_scope' })
   })
 
   it('keeps code-bound scopes when token exchange omits scope instead of widening to the catalog', async () => {
     const kv = new MemoryKV() as unknown as KVNamespace
-    const testEnv = { ...(await env(kv)), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
+    const testEnv = await env(kv)
+    stubRegistryFetch({ capabilities: [
       { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
       { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:read' },
-    ]))))
+    ] })
     const code = await createAuthorizationCode(kv, {
       clientId: 'time', redirectUri: 'https://time.dondone.dev/auth/callback', state: 'state',
       codeChallenge: await computeS256Challenge(CODE_VERIFIER), userId: 'user-123',
@@ -208,11 +261,11 @@ describe('POST /api/token', () => {
 
   it('successfully reduces two code-bound scopes to one with exact resource aud and typ', async () => {
     const kv = new MemoryKV() as unknown as KVNamespace
-    const testEnv = { ...(await env(kv)), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
+    const testEnv = await env(kv)
+    stubRegistryFetch({ capabilities: [
       { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
       { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:read' },
-    ]))))
+    ] })
     const code = await createAuthorizationCode(kv, {
       clientId: 'time', redirectUri: 'https://time.dondone.dev/auth/callback', state: 'state',
       codeChallenge: await computeS256Challenge(CODE_VERIFIER), userId: 'user-123',
@@ -244,6 +297,8 @@ describe('POST /api/token', () => {
       state: 'state-123',
       codeChallenge: await computeS256Challenge(CODE_VERIFIER),
       userId: 'user-123',
+      resource: 'https://api.dondone.dev',
+      scopes: ['api:echo'],
       session: {
         access_token: 'access-token',
         refresh_token: 'refresh-token',
@@ -276,6 +331,8 @@ describe('POST /api/token', () => {
       state: 'state-123',
       codeChallenge: await computeS256Challenge(CODE_VERIFIER),
       userId: 'user-123',
+      resource: 'https://api.dondone.dev',
+      scopes: ['api:echo'],
       session: {
         access_token: 'access-token',
         refresh_token: 'refresh-token',
@@ -294,19 +351,7 @@ describe('POST /api/token', () => {
           code_verifier: CODE_VERIFIER,
         }),
       }),
-      {
-        ...(await env(kv)),
-        AUTH_APPS_JSON: JSON.stringify({
-          notes: {
-            name: 'Notes',
-            redirectUris: ['https://time.dondone.dev/auth/callback'],
-          },
-          time: {
-            name: 'Time',
-            redirectUris: ['https://time.dondone.dev/auth/callback'],
-          },
-        }),
-      }
+      await env(kv)
     )
 
     expect(response.status).toBe(403)
@@ -344,7 +389,7 @@ describe('POST /api/token', () => {
     expect(response.status).toBe(403)
   })
 
-  it('exchanges a code when SERVICE_REGISTRY_SOURCE is "db"', async () => {
+  it('exchanges a code using the database registry', async () => {
     const kv = new MemoryKV() as unknown as KVNamespace
     const code = await createAuthorizationCode(kv, {
       clientId: 'time',
@@ -352,6 +397,8 @@ describe('POST /api/token', () => {
       state: 'state-123',
       codeChallenge: await computeS256Challenge(CODE_VERIFIER),
       userId: 'user-123',
+      resource: 'https://api.dondone.dev',
+      scopes: ['api:echo'],
       session: {
         access_token: 'access-token',
         refresh_token: 'refresh-token',
@@ -359,19 +406,6 @@ describe('POST /api/token', () => {
         token_type: 'bearer',
       },
     })
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify([
-            { key: 'time', name: 'Local Time', redirect_uris: ['https://time.dondone.dev/auth/callback'] },
-          ]),
-          { status: 200 }
-        )
-      )
-    )
-    vi.stubGlobal('caches', { default: new FakeCache() })
 
     const response = await handleToken(
       new Request('https://auth.dondone.dev/api/token', {
@@ -383,7 +417,7 @@ describe('POST /api/token', () => {
           code_verifier: CODE_VERIFIER,
         }),
       }),
-      { ...(await env(kv)), SERVICE_REGISTRY_SOURCE: 'db' }
+      await env(kv)
     )
 
     expect(response.status).toBe(200)

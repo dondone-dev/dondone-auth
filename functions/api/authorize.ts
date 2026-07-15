@@ -8,7 +8,6 @@ import {
   requireString,
 } from '../lib/http'
 import { assertSupportedPkceMethod } from '../lib/pkce'
-import { isResourceTokensEnabled } from '../lib/dondone-jwt'
 import {
   assertRegisteredService,
   loadApprovedScopes,
@@ -45,41 +44,26 @@ export async function handleAuthorize(
         ? body.code_challenge_method
         : undefined
     )
-    const registry = await loadServiceRegistry(env)
-    assertRegisteredService(registry, clientId, redirectUri)
-    const resourceMode = isResourceTokensEnabled(env)
-    const hasResource = Object.hasOwn(body, 'resource')
-    const hasScope = Object.hasOwn(body, 'scope')
-    if (hasResource && (typeof body.resource !== 'string' || body.resource.trim() === '')) {
+    if (typeof body.resource !== 'string' || body.resource.trim() === '') {
       throw new ApiError(400, 'invalid_target', 'resource must be a non-empty string.')
     }
-    const resource = typeof body.resource === 'string' ? body.resource.trim() : undefined
-    let scopes: string[] | undefined
-    if (hasScope) {
-      const rawScopes = typeof body.scope === 'string'
-        ? [body.scope]
-        : Array.isArray(body.scope) && body.scope.every((scope) => typeof scope === 'string')
-          ? body.scope
-          : null
-      if (!rawScopes) {
-        throw new ApiError(400, 'invalid_scope', 'scope must be a string or an array of strings.')
-      }
-      scopes = [...new Set(rawScopes.flatMap((scope) => scope.split(/\s+/)).filter(Boolean))].sort()
-      if (scopes.length === 0) {
-        throw new ApiError(400, 'invalid_scope', 'scope must contain at least one scope value.')
-      }
+    const resource = body.resource.trim()
+    const rawScopes = typeof body.scope === 'string'
+      ? [body.scope]
+      : Array.isArray(body.scope) && body.scope.every((scope) => typeof scope === 'string')
+        ? body.scope
+        : null
+    if (!rawScopes) {
+      throw new ApiError(400, 'invalid_scope', 'scope must be a string or an array of strings.')
     }
-
-    if (resourceMode || hasResource || hasScope) {
-      if (!resource) {
-        throw new ApiError(400, 'invalid_target', 'resource is required for a scoped authorization code.')
-      }
-      if (!scopes?.length) {
-        throw new ApiError(400, 'invalid_scope', 'scope is required for a resource authorization code.')
-      }
-      const { scopes: approvedScopes } = await loadApprovedScopes(env, resource)
-      scopes = validateRequestedScopes(scopes, approvedScopes)
+    let scopes = [...new Set(rawScopes.flatMap((scope) => scope.split(/\s+/)).filter(Boolean))].sort()
+    if (scopes.length === 0) {
+      throw new ApiError(400, 'invalid_scope', 'scope must contain at least one scope value.')
     }
+    const registry = await loadServiceRegistry(env)
+    assertRegisteredService(registry, clientId, redirectUri)
+    const { scopes: approvedScopes } = await loadApprovedScopes(env, resource)
+    scopes = validateRequestedScopes(scopes, approvedScopes)
 
     const user = await verifyAccessToken(env, accessToken)
     const code = await createAuthorizationCode(env.AUTH_CODES, {

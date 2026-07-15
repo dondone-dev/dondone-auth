@@ -5,12 +5,8 @@ pages_build_output_dir = "dist"
 [vars]
 SUPABASE_URL = "https://ttmrvhkmqljulrptviow.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_5jnBwB84hcwhi2uwqPJQpQ_VBP161NF"
-AUTH_APPS_JSON = "{\"time\":{\"name\":\"Time\",\"redirectUris\":[\"https://time.dondone.dev/auth/callback\"]},\"console\":{\"name\":\"Console\",\"redirectUris\":[\"https://console.dondone.dev/auth/callback\"]}}"
-SERVICE_REGISTRY_SOURCE = "db"
 DONDONE_JWT_KID = "dondone-auth-es256-1"
 DONDONE_JWT_ISSUER = "https://auth.dondone.dev"
-DONDONE_API_AUDIENCE = "https://api.dondone.dev"
-RESOURCE_ACCESS_TOKENS_ENABLED = "false"
 ADMIN_ALLOWED_ORIGINS = "https://console.dondone.dev"
 
 [[kv_namespaces]]

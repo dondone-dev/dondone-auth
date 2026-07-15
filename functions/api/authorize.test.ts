@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { handleAuthorize } from './authorize'
 import { ApiError } from '../lib/errors'
 import type { AuthEnv, SupabaseUser } from '../lib/types'
@@ -31,18 +31,11 @@ async function testPrivateJwk(): Promise<string> {
 async function env(): Promise<AuthEnv> {
   return {
     AUTH_CODES: new MemoryKV() as unknown as KVNamespace,
-    AUTH_APPS_JSON: JSON.stringify({
-      time: {
-        name: 'Time',
-        redirectUris: ['https://time.dondone.dev/auth/callback'],
-      },
-    }),
     SUPABASE_URL: 'https://project.supabase.co',
     SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
     DONDONE_JWT_PRIVATE_JWK: await testPrivateJwk(),
     DONDONE_JWT_KID: 'test-key',
     DONDONE_JWT_ISSUER: 'https://auth.dondone.dev',
-    DONDONE_API_AUDIENCE: 'https://api.dondone.dev',
   }
 }
 
@@ -57,9 +50,55 @@ class FakeCache {
   }
 }
 
+const clientRows = [
+  { key: 'time', name: 'Local Time', redirect_uris: ['https://time.dondone.dev/auth/callback'] },
+]
+const capabilityRows = [
+  { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
+]
+
+function stubRegistryFetch(options: {
+  clients?: unknown[]
+  capabilities?: unknown[]
+} = {}) {
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = String(input)
+    const rows = url.includes('oauth_client_registry')
+      ? (options.clients ?? clientRows)
+      : (options.capabilities ?? capabilityRows)
+    return new Response(JSON.stringify(rows), { status: 200 })
+  }))
+  vi.stubGlobal('caches', { default: new FakeCache() })
+}
+
 describe('POST /api/authorize', () => {
+  beforeEach(() => stubRegistryFetch())
+
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('requires resource and scope without a rollout flag', async () => {
+    const response = await handleAuthorize(
+      new Request('https://auth.dondone.dev/api/authorize', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: 'time',
+          redirect_uri: 'https://time.dondone.dev/auth/callback',
+          state: 'state-123',
+          code_challenge: 'challenge-123',
+          access_token: 'access-token',
+          refresh_token: 'refresh-token',
+          expires_at: 123,
+          token_type: 'bearer',
+        }),
+      }),
+      await env(),
+      async () => ({ id: 'user-123' })
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'invalid_target' })
   })
 
   it('returns a redirect URL with only code and state for a valid session', async () => {
@@ -79,6 +118,8 @@ describe('POST /api/authorize', () => {
           refresh_token: 'refresh-token',
           expires_at: 123,
           token_type: 'bearer',
+          resource: 'https://api.dondone.dev',
+          scope: 'api:echo',
         }),
       }),
       await env(),
@@ -97,10 +138,10 @@ describe('POST /api/authorize', () => {
   })
 
   it('binds normalized resource and scope to the authorization code', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
+    stubRegistryFetch({ capabilities: [
       { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
       { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:read' },
-    ]))))
+    ] })
     const testEnv = await env()
     const kv = testEnv.AUTH_CODES as unknown as MemoryKV
     const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
@@ -118,7 +159,7 @@ describe('POST /api/authorize', () => {
   })
 
   it('requires resource and non-empty scope in resource-token mode without writing a code', async () => {
-    const testEnv = { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
+    const testEnv = await env()
     const kv = testEnv.AUTH_CODES as unknown as MemoryKV
     const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
       method: 'POST', body: JSON.stringify({
@@ -133,7 +174,7 @@ describe('POST /api/authorize', () => {
   })
 
   it('rejects malformed scope arrays without writing a code', async () => {
-    const testEnv = { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
+    const testEnv = await env()
     const kv = testEnv.AUTH_CODES as unknown as MemoryKV
     const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
       method: 'POST', body: JSON.stringify({
@@ -152,8 +193,8 @@ describe('POST /api/authorize', () => {
       [[], 'https://unknown.dondone.dev', 'unknown:read', 'invalid_target'],
       [[{ service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' }], 'https://api.dondone.dev', 'api:read', 'invalid_scope'],
     ] as const) {
-      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(rows))))
-      const testEnv = { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
+      stubRegistryFetch({ capabilities: [...rows] })
+      const testEnv = await env()
       const kv = testEnv.AUTH_CODES as unknown as MemoryKV
       const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
         method: 'POST', body: JSON.stringify({
@@ -183,11 +224,11 @@ describe('POST /api/authorize', () => {
   })
 
   it('accepts and normalizes a valid string-array scope after catalog validation', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
+    stubRegistryFetch({ capabilities: [
       { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
       { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:read' },
-    ]))))
-    const testEnv = { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
+    ] })
+    const testEnv = await env()
     const kv = testEnv.AUTH_CODES as unknown as MemoryKV
     const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
       method: 'POST', body: JSON.stringify({
@@ -213,6 +254,8 @@ describe('POST /api/authorize', () => {
           refresh_token: 'refresh-token',
           expires_at: 123,
           token_type: 'bearer',
+          resource: 'https://api.dondone.dev',
+          scope: 'api:echo',
         }),
       }),
       await env(),
@@ -235,6 +278,8 @@ describe('POST /api/authorize', () => {
           refresh_token: 'refresh-token',
           expires_at: 123,
           token_type: 'bearer',
+          resource: 'https://api.dondone.dev',
+          scope: 'api:echo',
         }),
       }),
       await env(),
@@ -246,20 +291,7 @@ describe('POST /api/authorize', () => {
     expect(response.status).toBe(401)
   })
 
-  it('validates client_id/redirect_uri against the db-mode registry when SERVICE_REGISTRY_SOURCE is "db"', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify([
-            { key: 'time', name: 'Local Time', redirect_uris: ['https://time.dondone.dev/auth/callback'] },
-          ]),
-          { status: 200 }
-        )
-      )
-    )
-    vi.stubGlobal('caches', { default: new FakeCache() })
-
+  it('validates client_id/redirect_uri against the database registry', async () => {
     const response = await handleAuthorize(
       new Request('https://auth.dondone.dev/api/authorize', {
         method: 'POST',
@@ -272,9 +304,11 @@ describe('POST /api/authorize', () => {
           refresh_token: 'refresh-token',
           expires_at: 123,
           token_type: 'bearer',
+          resource: 'https://api.dondone.dev',
+          scope: 'api:echo',
         }),
       }),
-      { ...(await env()), SERVICE_REGISTRY_SOURCE: 'db' },
+      await env(),
       async () => ({ id: 'user-123', email: 'user@example.com' })
     )
 
@@ -282,8 +316,7 @@ describe('POST /api/authorize', () => {
   })
 
   it('rejects a client not present in the db-mode registry', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })))
-    vi.stubGlobal('caches', { default: new FakeCache() })
+    stubRegistryFetch({ clients: [] })
 
     const response = await handleAuthorize(
       new Request('https://auth.dondone.dev/api/authorize', {
@@ -297,9 +330,11 @@ describe('POST /api/authorize', () => {
           refresh_token: 'refresh-token',
           expires_at: 123,
           token_type: 'bearer',
+          resource: 'https://api.dondone.dev',
+          scope: 'api:echo',
         }),
       }),
-      { ...(await env()), SERVICE_REGISTRY_SOURCE: 'db' },
+      await env(),
       async () => ({ id: 'user-123' })
     )
 

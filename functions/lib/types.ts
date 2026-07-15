@@ -1,15 +1,11 @@
 export interface AuthEnv {
   AUTH_CODES: KVNamespace
-  AUTH_APPS_JSON: string
-  SERVICE_REGISTRY_SOURCE?: 'static' | 'db'
   SUPABASE_URL: string
   SUPABASE_PUBLISHABLE_KEY: string
   SUPABASE_SERVICE_ROLE_KEY: string
   DONDONE_JWT_PRIVATE_JWK: string
   DONDONE_JWT_KID: string
   DONDONE_JWT_ISSUER: string
-  DONDONE_API_AUDIENCE: string
-  RESOURCE_ACCESS_TOKENS_ENABLED?: string
   ADMIN_ALLOWED_ORIGINS?: string
 }
 
@@ -18,8 +14,7 @@ export interface AuthApp {
   redirectUris: string[]
 }
 
-export type AuthAppRegistry = Record<string, AuthApp>
-export type ServiceRegistry = AuthAppRegistry
+export type ServiceRegistry = Record<string, AuthApp>
 
 export interface SupabaseUser {
   id: string

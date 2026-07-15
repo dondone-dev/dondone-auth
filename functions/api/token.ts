@@ -1,9 +1,5 @@
 import { consumeAuthorizationCode } from '../lib/codes'
-import {
-  isResourceTokensEnabled,
-  signDondoneAccessToken,
-  signDondoneApiToken,
-} from '../lib/dondone-jwt'
+import { signDondoneAccessToken } from '../lib/dondone-jwt'
 import { ApiError } from '../lib/errors'
 import { verifyPkce } from '../lib/pkce'
 import {
@@ -52,43 +48,44 @@ export async function handleToken(
 
     const user = { id: record.userId, email: record.userEmail }
 
-    if (isResourceTokensEnabled(env)) {
-      if (!record.resource) {
-        throw new ApiError(400, 'invalid_target', 'Authorization code is not bound to a resource.')
-      }
-      if (body.resource !== undefined && typeof body.resource !== 'string') {
-        throw new ApiError(400, 'invalid_target', 'resource must be a string.')
-      }
-      const tokenResource = typeof body.resource === 'string' ? body.resource : record.resource
-      if (tokenResource !== record.resource) {
-        throw new ApiError(400, 'invalid_target', 'Token resource must match the authorization code resource.')
-      }
-      if (body.scope !== undefined && typeof body.scope !== 'string') {
-        throw new ApiError(400, 'invalid_scope', 'scope must be a space-delimited string.')
-      }
-      const boundScopes = [...new Set(record.scopes ?? [])].sort()
-      const requestedScopes = typeof body.scope === 'string'
-        ? [...new Set(body.scope.split(/\s+/).filter(Boolean))].sort()
-        : boundScopes
-      const boundScopeSet = new Set(boundScopes)
-      const widenedScopes = requestedScopes.filter((scope) => !boundScopeSet.has(scope))
-      if (widenedScopes.length > 0) {
-        throw new ApiError(400, 'invalid_scope', `Token scope exceeds the authorization code scope: ${widenedScopes.join(', ')}.`)
-      }
-      const { scopes: approvedScopes } = await loadApprovedScopes(env, record.resource)
-      const validScopes = validateRequestedScopes(requestedScopes, approvedScopes)
-
-      const apiToken = await signDondoneAccessToken({
-        env,
-        user,
-        clientId,
-        resource: record.resource,
-        scopes: validScopes,
-      })
-      return jsonResponse(request, env, { ...record.session, ...apiToken })
+    if (!record.resource) {
+      throw new ApiError(400, 'invalid_target', 'Authorization code is not bound to a resource.')
     }
+    if (body.resource !== undefined && typeof body.resource !== 'string') {
+      throw new ApiError(400, 'invalid_target', 'resource must be a string.')
+    }
+    const tokenResource = typeof body.resource === 'string' ? body.resource : record.resource
+    if (tokenResource !== record.resource) {
+      throw new ApiError(400, 'invalid_target', 'Token resource must match the authorization code resource.')
+    }
+    if (body.scope !== undefined && typeof body.scope !== 'string') {
+      throw new ApiError(400, 'invalid_scope', 'scope must be a space-delimited string.')
+    }
+    const boundScopes = [...new Set(record.scopes ?? [])].sort()
+    if (boundScopes.length === 0) {
+      throw new ApiError(400, 'invalid_scope', 'Authorization code is not bound to a scope.')
+    }
+    const requestedScopes = typeof body.scope === 'string'
+      ? [...new Set(body.scope.split(/\s+/).filter(Boolean))].sort()
+      : boundScopes
+    if (requestedScopes.length === 0) {
+      throw new ApiError(400, 'invalid_scope', 'Token scope must contain at least one scope value.')
+    }
+    const boundScopeSet = new Set(boundScopes)
+    const widenedScopes = requestedScopes.filter((scope) => !boundScopeSet.has(scope))
+    if (widenedScopes.length > 0) {
+      throw new ApiError(400, 'invalid_scope', `Token scope exceeds the authorization code scope: ${widenedScopes.join(', ')}.`)
+    }
+    const { scopes: approvedScopes } = await loadApprovedScopes(env, record.resource)
+    const validScopes = validateRequestedScopes(requestedScopes, approvedScopes)
 
-    const apiToken = await signDondoneApiToken(env, user, clientId)
+    const apiToken = await signDondoneAccessToken({
+      env,
+      user,
+      clientId,
+      resource: record.resource,
+      scopes: validScopes,
+    })
     return jsonResponse(request, env, { ...record.session, ...apiToken })
   } catch (error) {
     return errorResponse(request, env, error)

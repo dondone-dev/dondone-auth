@@ -23,9 +23,9 @@ Client app → redirects to auth.dondone.dev with PKCE params
 
 | Endpoint | Description |
 |---|---|
-| `POST /api/authorize` | Validates the Supabase session and returns a one-time authorization code redirect. Accepts optional `resource` and `scope` params for resource-aware tokens. |
-| `POST /api/token` | Validates PKCE and exchanges the code. In resource-token mode, `resource` must equal the code-bound resource and an optional `scope` may only reduce the code-bound scopes. Omitting `scope` preserves the code-bound set. |
-| `POST /api/api-token` | Exchanges a Supabase Bearer token for a short-lived token. Resource-token mode requires explicit non-empty `resource` and `scope`; it never defaults to every approved scope. |
+| `POST /api/authorize` | Validates the Supabase session and returns a one-time authorization code redirect. A registered `resource` and non-empty approved `scope` are required and bound to the code. |
+| `POST /api/token` | Validates PKCE and exchanges the resource-bound code for an `at+jwt`. If supplied, `resource` must match the code and `scope` may only reduce its non-empty bound scope set; omitting `scope` preserves that set. |
+| `POST /api/api-token` | Exchanges a Supabase Bearer token for a short-lived `at+jwt`. Explicit non-empty `resource` and `scope` are required; it never defaults to every approved scope. |
 | `GET /api/jwks` | Publishes the public key used to verify Dondone API JWTs. |
 | `GET /api/me` | Validates a Bearer token and returns the Supabase user. |
 | `POST /api/admin/services/:key/capability-sync` | Admin: fetch and store the capability manifest from the service's well-known endpoint. |
@@ -51,13 +51,9 @@ VITE_API_BASE
 SUPABASE_URL
 SUPABASE_PUBLISHABLE_KEY
 SUPABASE_SERVICE_ROLE_KEY          # secret — required for admin API and scope validation
-AUTH_APPS_JSON
-SERVICE_REGISTRY_SOURCE
 DONDONE_JWT_PRIVATE_JWK
 DONDONE_JWT_KID
 DONDONE_JWT_ISSUER
-DONDONE_API_AUDIENCE
-RESOURCE_ACCESS_TOKENS_ENABLED     # optional — set to "true" to issue at+jwt resource tokens
 ADMIN_ALLOWED_ORIGINS              # comma-separated admin API CORS allow-list
 ```
 
@@ -67,11 +63,11 @@ ADMIN_ALLOWED_ORIGINS              # comma-separated admin API CORS allow-list
 pnpm wrangler pages secret put SUPABASE_SERVICE_ROLE_KEY --project-name dondone-auth
 ```
 
-`RESOURCE_ACCESS_TOKENS_ENABLED` is a feature flag. When set to `"true"`, `/api/token` and `/api/api-token` issue audience-bound `at+jwt` access tokens (RFC 9068) instead of legacy JWTs. Set it as a plain Pages variable — not a secret.
+`/api/authorize`, `/api/token`, and `/api/api-token` always require an approved resource and non-empty scope. Issued access tokens are audience-bound `at+jwt` tokens (RFC 9068); legacy unscoped authorization codes and fixed-audience JWTs are rejected.
 
 `ADMIN_ALLOWED_ORIGINS` must list every browser origin allowed to call `/api/admin/*`, for example `https://console.dondone.dev`. Unlisted origins never receive CORS permission.
 
-`AUTH_APPS_JSON` stores registered client apps, including `client_id` and allowed `redirect_uri` values. `SERVICE_REGISTRY_SOURCE` selects where the registry is read from: unset or `static` reads `AUTH_APPS_JSON`; `db` reads the Supabase `public.oauth_client_registry` view instead, which is managed from the Dondone Console's Services page. Any other value is a configuration error (`invalid_registry_source`). This is a human-controlled switch, not an automatic fallback — a database read failure while set to `db` fails the request rather than silently reverting to `static`.
+Registered OAuth clients and redirect URIs are always read from the Supabase `public.oauth_client_registry` view managed by the Dondone Console. Registry failures fail closed; there is no static registry fallback.
 
 **KV Binding**: `AUTH_CODES`
 

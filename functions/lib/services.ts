@@ -1,4 +1,3 @@
-import { parseAuthApps } from './apps'
 import { ApiError } from './errors'
 import type { AuthApp, AuthEnv, ServiceRegistry } from './types'
 
@@ -13,28 +12,12 @@ interface RegistryRow {
 let inFlightFetch: Promise<ServiceRegistry> | null = null
 
 export async function loadServiceRegistry(env: AuthEnv): Promise<ServiceRegistry> {
-  const source = resolveRegistrySource(env)
-  if (source === 'static') {
-    return parseAuthApps(env.AUTH_APPS_JSON)
-  }
-
   const cached = await readFromCache(env)
   if (cached) return cached
 
   const registry = await fetchServiceRegistryFromDb(env)
   await writeToCache(env, registry)
   return registry
-}
-
-function resolveRegistrySource(env: AuthEnv): 'static' | 'db' {
-  const value = env.SERVICE_REGISTRY_SOURCE
-  if (value === undefined || value === 'static') return 'static'
-  if (value === 'db') return 'db'
-  throw new ApiError(
-    500,
-    'invalid_registry_source',
-    `SERVICE_REGISTRY_SOURCE must be "static" or "db" (or unset); got ${JSON.stringify(value)}.`
-  )
 }
 
 function cacheKeyFor(env: AuthEnv): Request {

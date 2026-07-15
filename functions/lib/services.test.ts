@@ -13,15 +13,11 @@ const registry: ServiceRegistry = {
 function baseEnv(overrides: Partial<AuthEnv> = {}): AuthEnv {
   return {
     AUTH_CODES: {} as KVNamespace,
-    AUTH_APPS_JSON: JSON.stringify({
-      time: { name: 'Local Time', redirectUris: ['https://time.dondone.dev/auth/callback'] },
-    }),
     SUPABASE_URL: 'https://project.supabase.co',
     SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
     DONDONE_JWT_PRIVATE_JWK: '{}',
     DONDONE_JWT_KID: 'test-key',
     DONDONE_JWT_ISSUER: 'https://auth.dondone.dev',
-    DONDONE_API_AUDIENCE: 'https://api.dondone.dev',
     ...overrides,
   }
 }
@@ -85,29 +81,19 @@ describe('service registry matching', () => {
   })
 })
 
-describe('loadServiceRegistry source switch', () => {
+describe('database service registry', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
   })
 
-  it('reads AUTH_APPS_JSON when SERVICE_REGISTRY_SOURCE is unset', async () => {
-    const result = await loadServiceRegistry(baseEnv())
-    expect(result.time?.name).toBe('Local Time')
-  })
-
-  it('reads AUTH_APPS_JSON when SERVICE_REGISTRY_SOURCE is explicitly "static"', async () => {
-    const result = await loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'static' }))
-    expect(result.time?.name).toBe('Local Time')
-  })
-
-  it('fetches from oauth_client_registry when SERVICE_REGISTRY_SOURCE is "db", sending only apikey', async () => {
+  it('always fetches from oauth_client_registry, sending only apikey', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify([dbRow()]), { status: 200 })
     )
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('caches', { default: new FakeCache() })
 
-    const result = await loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' }))
+    const result = await loadServiceRegistry(baseEnv())
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(String(fetchMock.mock.calls[0][0])).toContain('/rest/v1/oauth_client_registry')
@@ -118,21 +104,7 @@ describe('loadServiceRegistry source switch', () => {
     expect(result.time?.name).toBe('Local Time')
   })
 
-  it('rejects an unrecognized SERVICE_REGISTRY_SOURCE value instead of silently using AUTH_APPS_JSON', async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
-
-    await expect(
-      loadServiceRegistry({
-        ...baseEnv(),
-        // @ts-expect-error deliberately simulating a runtime env-var typo
-        SERVICE_REGISTRY_SOURCE: 'DB',
-      })
-    ).rejects.toMatchObject({ status: 500, error: 'invalid_registry_source' })
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it('throws registry_unavailable when fetch itself rejects (DNS/connection failure), without falling back', async () => {
+  it('throws registry_unavailable when fetch itself rejects', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
@@ -142,7 +114,7 @@ describe('loadServiceRegistry source switch', () => {
     vi.stubGlobal('caches', { default: new FakeCache() })
 
     await expect(
-      loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' }))
+      loadServiceRegistry(baseEnv())
     ).rejects.toMatchObject({ status: 500, error: 'registry_unavailable' })
   })
 
@@ -172,7 +144,7 @@ describe('loadServiceRegistry source switch', () => {
     )
     vi.stubGlobal('caches', { default: new FakeCache() })
 
-    const result = await loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' }))
+    const result = await loadServiceRegistry(baseEnv())
 
     expect(result['bad-fragment']).toBeUndefined()
     expect(result['bad-userinfo']).toBeUndefined()
@@ -184,17 +156,17 @@ describe('loadServiceRegistry source switch', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })))
     vi.stubGlobal('caches', { default: new FakeCache() })
 
-    const result = await loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' }))
+    const result = await loadServiceRegistry(baseEnv())
 
     expect(result.time).toBeUndefined()
   })
 
-  it('throws registry_unavailable on a DB fetch failure, without falling back to AUTH_APPS_JSON', async () => {
+  it('throws registry_unavailable on a DB response failure', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('error', { status: 500 })))
     vi.stubGlobal('caches', { default: new FakeCache() })
 
     await expect(
-      loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' }))
+      loadServiceRegistry(baseEnv())
     ).rejects.toBeInstanceOf(ApiError)
   })
 
@@ -203,7 +175,7 @@ describe('loadServiceRegistry source switch', () => {
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('caches', { default: new FakeCache() })
 
-    const env = baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' })
+    const env = baseEnv()
     await loadServiceRegistry(env)
     await loadServiceRegistry(env)
 
@@ -222,7 +194,7 @@ describe('loadServiceRegistry source switch', () => {
       },
     })
 
-    const result = await loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' }))
+    const result = await loadServiceRegistry(baseEnv())
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(result.time?.name).toBe('Local Time')
@@ -238,7 +210,7 @@ describe('loadServiceRegistry source switch', () => {
       },
     })
 
-    const result = await loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' }))
+    const result = await loadServiceRegistry(baseEnv())
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(result.time?.name).toBe('Local Time')
@@ -262,7 +234,7 @@ describe('loadServiceRegistry source switch', () => {
       },
     })
 
-    const result = await loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' }))
+    const result = await loadServiceRegistry(baseEnv())
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(result.time?.redirectUris).toEqual(['https://time.dondone.dev/auth/callback'])
@@ -280,7 +252,7 @@ describe('loadServiceRegistry source switch', () => {
       },
     })
 
-    const result = await loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' }))
+    const result = await loadServiceRegistry(baseEnv())
 
     expect(result.time?.name).toBe('Local Time')
   })
