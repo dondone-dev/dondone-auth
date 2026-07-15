@@ -1,0 +1,1 @@
+../../docs/sql/migrations/20260714_migrate_seed_permissions_to_capabilities.sql
