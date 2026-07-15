@@ -80,24 +80,6 @@ create table if not exists public.user_permission_groups (
   unique (user_id, group_id)
 );
 
-create table if not exists public.user_permissions (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references public.profiles(id) on delete cascade,
-  permission_key text not null references public.permissions(key) on delete cascade,
-  status text not null default 'active'
-    check (status in ('active', 'revoked')),
-  granted_by uuid references public.profiles(id),
-  expires_at timestamptz,
-  created_at timestamptz not null default now(),
-  unique (user_id, permission_key)
-);
-
-create index if not exists user_permissions_user_id_idx
-  on public.user_permissions(user_id);
-
-create index if not exists user_permissions_lookup_idx
-  on public.user_permissions(user_id, permission_key, status, expires_at);
-
 create index if not exists permission_groups_service_key_idx
   on public.permission_groups(service_key);
 
@@ -215,12 +197,6 @@ begin
     display_name = coalesce(public.profiles.display_name, excluded.display_name),
     avatar_url = coalesce(public.profiles.avatar_url, excluded.avatar_url);
 
-  insert into public.user_permission_groups (user_id, group_id)
-  select new.id, id
-  from public.permission_groups
-  where service_key = 'api' and key = 'basic'
-  on conflict (user_id, group_id) do nothing;
-
   return new;
 end;
 $$;
@@ -230,28 +206,12 @@ create trigger on_auth_user_created
 after insert on auth.users
 for each row execute function public.handle_new_user();
 
--- Migration bridge: existing users with legacy api:echo direct grants receive api/basic.
-insert into public.user_permission_groups (user_id, group_id)
-select up.user_id, pg.id
-from public.user_permissions up
-join public.permission_groups pg on pg.service_key = 'api' and pg.key = 'basic'
-where up.permission_key = 'api:echo' and up.status = 'active'
-on conflict (user_id, group_id) do nothing;
-
--- New default: every profile receives api/basic for echo validation.
-insert into public.user_permission_groups (user_id, group_id)
-select p.id, pg.id
-from public.profiles p
-join public.permission_groups pg on pg.service_key = 'api' and pg.key = 'basic'
-on conflict (user_id, group_id) do nothing;
-
 alter table public.profiles enable row level security;
 alter table public.services enable row level security;
 alter table public.permissions enable row level security;
 alter table public.permission_groups enable row level security;
 alter table public.permission_group_permissions enable row level security;
 alter table public.user_permission_groups enable row level security;
-alter table public.user_permissions enable row level security;
 
 grant select on public.services to anon, authenticated;
 grant select on public.permissions to anon, authenticated;
@@ -259,14 +219,12 @@ grant select on public.permission_groups to anon, authenticated;
 grant select on public.permission_group_permissions to anon, authenticated;
 grant select on public.profiles to authenticated;
 grant select on public.user_permission_groups to authenticated;
-grant select on public.user_permissions to authenticated;
 grant select, insert, update, delete on public.profiles to service_role;
 grant select, insert, update, delete on public.services to service_role;
 grant select, insert, update, delete on public.permissions to service_role;
 grant select, insert, update, delete on public.permission_groups to service_role;
 grant select, insert, update, delete on public.permission_group_permissions to service_role;
 grant select, insert, update, delete on public.user_permission_groups to service_role;
-grant select, insert, update, delete on public.user_permissions to service_role;
 
 drop policy if exists "Users can read their own profile" on public.profiles;
 create policy "Users can read their own profile"
@@ -301,11 +259,5 @@ using (true);
 drop policy if exists "Users can read their own permission groups" on public.user_permission_groups;
 create policy "Users can read their own permission groups"
 on public.user_permission_groups for select
-to authenticated
-using ((select auth.uid()) = user_id);
-
-drop policy if exists "Users can read their own permissions" on public.user_permissions;
-create policy "Users can read their own permissions"
-on public.user_permissions for select
 to authenticated
 using ((select auth.uid()) = user_id);

@@ -45,6 +45,47 @@ docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres -f /workspace/docs/
 docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres -f /workspace/docs/sql/migrations/20260714_add_service_capability_registry.sql >/dev/null
 
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres <<'SQL'
+-- Recreate the historical direct-grant table when the canonical schema no
+-- longer defines it. The final migration is tested against this pre-final
+-- production shape, independently from the canonical fresh-install shape.
+create table if not exists public.user_permissions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  permission_key text not null references public.permissions(key) on delete cascade,
+  status text not null default 'active' check (status in ('active', 'revoked')),
+  granted_by uuid references public.profiles(id),
+  expires_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (user_id, permission_key)
+);
+
+-- Restore the historical trigger behavior too, so the final new-user check
+-- proves the migration replaced it rather than inheriting the canonical form.
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, email, display_name, avatar_url)
+  values (
+    new.id,
+    new.email,
+    coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name'),
+    new.raw_user_meta_data->>'avatar_url'
+  )
+  on conflict (id) do update set email = excluded.email;
+
+  insert into public.user_permission_groups(user_id, group_id)
+  select new.id, id from public.permission_groups
+  where service_key='api' and key='basic'
+  on conflict (user_id, group_id) do nothing;
+
+  return new;
+end;
+$$;
+
 insert into auth.users(id,email)
 values ('00000000-0000-0000-0000-000000000001','admin@example.com');
 update public.services set resource_uri='https://api.dondone.dev' where key='api';
@@ -339,6 +380,126 @@ do $$ begin
     where user_id='00000000-0000-0000-0000-000000000001' and permission_key='api:tier:vip' and status='active'
   ) then
     raise exception 'direct VIP grant was not preserved';
+  end if;
+end $$;
+SQL
+
+# The pure-role migration must reject unexpected live direct permissions before
+# it drops the legacy table or migrates any api:echo grant.
+docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres <<'SQL'
+insert into public.permission_groups(service_key,key,name,is_system,status)
+values ('api','caller','Caller',true,'active')
+on conflict (service_key,key) do update
+set name=excluded.name,is_system=excluded.is_system,status=excluded.status;
+insert into public.permission_group_permissions(group_id,permission_key)
+select id,'api:echo' from public.permission_groups
+where service_key='api' and key='caller'
+on conflict do nothing;
+
+insert into auth.users(id,email) values
+  ('00000000-0000-0000-0000-000000000002','merge@example.com'),
+  ('00000000-0000-0000-0000-000000000003','permanent@example.com'),
+  ('00000000-0000-0000-0000-000000000004','expired@example.com'),
+  ('00000000-0000-0000-0000-000000000005','revoked@example.com');
+
+insert into public.user_permission_groups(user_id,group_id,status,granted_by,expires_at)
+select '00000000-0000-0000-0000-000000000002',id,'active',
+       '00000000-0000-0000-0000-000000000002','2028-01-01T00:00:00Z'
+from public.permission_groups where service_key='api' and key='caller';
+insert into public.user_permission_groups(user_id,group_id,status,granted_by,expires_at)
+select '00000000-0000-0000-0000-000000000003',id,'revoked',
+       '00000000-0000-0000-0000-000000000001','2029-01-01T00:00:00Z'
+from public.permission_groups where service_key='api' and key='caller';
+
+insert into public.user_permissions(user_id,permission_key,status,granted_by,expires_at) values
+  ('00000000-0000-0000-0000-000000000002','api:echo','active','00000000-0000-0000-0000-000000000001','2027-01-01T00:00:00Z'),
+  ('00000000-0000-0000-0000-000000000003','api:echo','active','00000000-0000-0000-0000-000000000002',null),
+  ('00000000-0000-0000-0000-000000000004','api:echo','active','00000000-0000-0000-0000-000000000001',now() - interval '1 day'),
+  ('00000000-0000-0000-0000-000000000005','api:echo','revoked','00000000-0000-0000-0000-000000000001',null);
+SQL
+
+if docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres \
+  -f /workspace/docs/sql/migrations/20260715_finalize_pure_role_authorization.sql >/dev/null 2>&1; then
+  echo "Pure-role migration unexpectedly accepted an active non-api:echo direct grant." >&2
+  exit 1
+fi
+
+docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres <<'SQL'
+do $$ begin
+  if to_regclass('public.user_permissions') is null then
+    raise exception 'failed pure-role migration dropped direct grants';
+  end if;
+  if exists (
+    select 1 from public.user_permission_groups membership
+    join public.permission_groups role on role.id=membership.group_id
+    where membership.user_id='00000000-0000-0000-0000-000000000002'
+      and role.service_key='api' and role.key='caller'
+      and membership.granted_by='00000000-0000-0000-0000-000000000001'
+  ) then
+    raise exception 'failed pure-role migration partially migrated api:echo';
+  end if;
+end $$;
+update public.user_permissions
+set status='revoked'
+where permission_key <> 'api:echo' and status='active';
+SQL
+
+docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres \
+  -f /workspace/docs/sql/migrations/20260715_finalize_pure_role_authorization.sql >/dev/null
+
+docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres <<'SQL'
+do $$
+declare caller_group uuid;
+begin
+  select id into caller_group from public.permission_groups
+  where service_key='api' and key='caller';
+
+  if to_regclass('public.user_permissions') is not null then
+    raise exception 'successful pure-role migration retained direct grants';
+  end if;
+  if not exists (
+    select 1 from public.user_permission_groups
+    where user_id='00000000-0000-0000-0000-000000000002'
+      and group_id=caller_group and status='active'
+      and granted_by='00000000-0000-0000-0000-000000000001'
+      and expires_at='2028-01-01T00:00:00Z'
+  ) then
+    raise exception 'finite direct Caller grant metadata was not preserved and merged';
+  end if;
+  if not exists (
+    select 1 from public.user_permission_groups
+    where user_id='00000000-0000-0000-0000-000000000003'
+      and group_id=caller_group and status='active'
+      and granted_by='00000000-0000-0000-0000-000000000002'
+      and expires_at is null
+  ) then
+    raise exception 'permanent direct Caller grant did not win union expiry';
+  end if;
+  if exists (
+    select 1 from public.user_permission_groups
+    where user_id in (
+      '00000000-0000-0000-0000-000000000004',
+      '00000000-0000-0000-0000-000000000005'
+    ) and group_id=caller_group
+  ) then
+    raise exception 'expired or revoked direct grant was migrated';
+  end if;
+end $$;
+
+insert into auth.users(id,email)
+values ('00000000-0000-0000-0000-000000000006','new-user@example.com');
+do $$ begin
+  if not exists (
+    select 1 from public.profiles
+    where id='00000000-0000-0000-0000-000000000006'
+  ) then
+    raise exception 'new auth user did not receive a profile';
+  end if;
+  if exists (
+    select 1 from public.user_permission_groups
+    where user_id='00000000-0000-0000-0000-000000000006'
+  ) then
+    raise exception 'new auth user received a default group';
   end if;
 end $$;
 SQL
