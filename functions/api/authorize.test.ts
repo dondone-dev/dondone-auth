@@ -78,6 +78,52 @@ describe('POST /api/authorize', () => {
     vi.unstubAllGlobals()
   })
 
+  it('rejects a catalog-valid scope the user is not granted before writing a code', async () => {
+    const testEnv = await env()
+    const kv = testEnv.AUTH_CODES as unknown as MemoryKV
+    const response = await handleAuthorize(
+      new Request('https://auth.dondone.dev/api/authorize', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', state: 'state',
+          code_challenge: 'challenge', access_token: 'access', refresh_token: 'refresh', expires_at: 123,
+          token_type: 'bearer', resource: 'https://api.dondone.dev', scope: 'api:echo',
+        }),
+      }),
+      testEnv,
+      async () => ({ id: 'user-123' }),
+      async () => []
+    )
+
+    expect(response.status).toBe(403)
+    expect(await response.json()).toEqual({
+      error: 'permission_denied',
+      message: 'Requested scope is not granted to this user.',
+    })
+    expect(kv.values.size).toBe(0)
+  })
+
+  it('reports catalog-invalid scope before checking user permissions', async () => {
+    const loadPermissions = vi.fn(async () => [])
+    const response = await handleAuthorize(
+      new Request('https://auth.dondone.dev/api/authorize', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', state: 'state',
+          code_challenge: 'challenge', access_token: 'access', refresh_token: 'refresh', expires_at: 123,
+          token_type: 'bearer', resource: 'https://api.dondone.dev', scope: 'api:not-in-catalog',
+        }),
+      }),
+      await env(),
+      async () => ({ id: 'user-123' }),
+      loadPermissions
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'invalid_scope' })
+    expect(loadPermissions).not.toHaveBeenCalled()
+  })
+
   it('requires resource and scope without a rollout flag', async () => {
     const response = await handleAuthorize(
       new Request('https://auth.dondone.dev/api/authorize', {
@@ -123,7 +169,8 @@ describe('POST /api/authorize', () => {
         }),
       }),
       await env(),
-      verify
+      verify,
+      async () => ['api:echo']
     )
 
     const body = (await response.json()) as { redirect_to: string }
@@ -150,7 +197,7 @@ describe('POST /api/authorize', () => {
         code_challenge: 'challenge', access_token: 'access', refresh_token: 'refresh', expires_at: 123,
         token_type: 'bearer', resource: 'https://api.dondone.dev', scope: 'api:read  api:echo api:read',
       }),
-    }), testEnv, async () => ({ id: 'user-123' }))
+    }), testEnv, async () => ({ id: 'user-123' }), async () => ['api:echo', 'api:read'])
     const code = new URL(((await response.json()) as { redirect_to: string }).redirect_to).searchParams.get('code')!
     const stored = JSON.parse(kv.values.get(code)!)
 
@@ -236,7 +283,7 @@ describe('POST /api/authorize', () => {
         code_challenge: 'challenge', access_token: 'access', refresh_token: 'refresh', expires_at: 123,
         token_type: 'bearer', resource: 'https://api.dondone.dev', scope: ['api:read', 'api:echo', 'api:read'],
       }),
-    }), testEnv, async () => ({ id: 'user' }))
+    }), testEnv, async () => ({ id: 'user' }), async () => ['api:echo', 'api:read'])
     const code = new URL(((await response.json()) as { redirect_to: string }).redirect_to).searchParams.get('code')!
     expect(JSON.parse(kv.values.get(code)!).scopes).toEqual(['api:echo', 'api:read'])
   })
@@ -309,7 +356,8 @@ describe('POST /api/authorize', () => {
         }),
       }),
       await env(),
-      async () => ({ id: 'user-123', email: 'user@example.com' })
+      async () => ({ id: 'user-123', email: 'user@example.com' }),
+      async () => ['api:echo']
     )
 
     expect(response.status).toBe(200)

@@ -56,7 +56,12 @@ export interface PermissionGroupRow {
   } | null
 }
 
-async function loadEffectivePermissions(
+export type LoadEffectivePermissions = (
+  env: AuthEnv,
+  userId: string
+) => Promise<string[]>
+
+export async function loadEffectivePermissions(
   env: AuthEnv,
   userId: string
 ): Promise<string[]> {
@@ -64,36 +69,22 @@ async function loadEffectivePermissions(
     auth: { persistSession: false },
   })
 
-  const [directResult, groupResult] = await Promise.all([
-    supabase
-      .from('user_permissions')
-      .select('permission_key,status,expires_at')
-      .eq('user_id', userId),
-    supabase
-      .from('user_permission_groups')
-      .select('status,expires_at,permission_groups(status,permission_group_permissions(permissions(key)))')
-      .eq('user_id', userId),
-  ])
+  const groupResult = await supabase
+    .from('user_permission_groups')
+    .select('status,expires_at,permission_groups(status,permission_group_permissions(permissions(key)))')
+    .eq('user_id', userId)
 
-  if (directResult.error) throw directResult.error
   if (groupResult.error) throw groupResult.error
   return collectEffectivePermissions(
-    directResult.data ?? [],
     (groupResult.data ?? []) as unknown as PermissionGroupRow[],
     Date.now()
   )
 }
 
 export function collectEffectivePermissions(
-  directRows: Array<{ permission_key: string; status: string; expires_at: string | null }>,
   groupRows: PermissionGroupRow[],
   now: number
 ): string[] {
-  const direct = directRows
-    .filter((r: { status: string; expires_at: string | null }) =>
-      r.status === 'active' && (!r.expires_at || Date.parse(r.expires_at) > now))
-    .map((r: { permission_key: string }) => r.permission_key)
-
   const grouped = groupRows
     .filter((r) => r.status === 'active' && (!r.expires_at || Date.parse(r.expires_at) > now))
     .flatMap((r) =>
@@ -104,5 +95,19 @@ export function collectEffectivePermissions(
         : []
     )
 
-  return [...new Set([...direct, ...grouped])].sort()
+  return [...new Set(grouped)].sort()
+}
+
+export function assertScopesGranted(
+  requestedScopes: string[],
+  effectivePermissions: string[]
+): void {
+  const granted = new Set(effectivePermissions)
+  if (requestedScopes.some((scope) => !granted.has(scope))) {
+    throw new ApiError(
+      403,
+      'permission_denied',
+      'Requested scope is not granted to this user.'
+    )
+  }
 }

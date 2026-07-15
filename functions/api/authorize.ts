@@ -16,6 +16,11 @@ import {
 } from '../lib/services'
 import { ApiError } from '../lib/errors'
 import { getSupabaseUser } from '../lib/supabase'
+import {
+  assertScopesGranted,
+  loadEffectivePermissions,
+  type LoadEffectivePermissions,
+} from '../lib/admin-auth'
 import type { AuthEnv, SupabaseUser } from '../lib/types'
 
 type VerifyAccessToken = (
@@ -26,7 +31,8 @@ type VerifyAccessToken = (
 export async function handleAuthorize(
   request: Request,
   env: AuthEnv,
-  verifyAccessToken: VerifyAccessToken = getSupabaseUser
+  verifyAccessToken: VerifyAccessToken = getSupabaseUser,
+  loadPermissions: LoadEffectivePermissions = loadEffectivePermissions
 ): Promise<Response> {
   try {
     const body = await readJsonObject(request)
@@ -66,6 +72,8 @@ export async function handleAuthorize(
     scopes = validateRequestedScopes(scopes, approvedScopes)
 
     const user = await verifyAccessToken(env, accessToken)
+    const permissions = await loadPermissions(env, user.id)
+    assertScopesGranted(scopes, permissions)
     const code = await createAuthorizationCode(env.AUTH_CODES, {
       clientId,
       redirectUri,

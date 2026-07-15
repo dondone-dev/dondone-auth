@@ -83,6 +83,28 @@ describe('POST /api/token', () => {
     vi.unstubAllGlobals()
   })
 
+  it('rejects exchange when a code-bound permission has been revoked', async () => {
+    const kv = new MemoryKV() as unknown as KVNamespace
+    const code = await createAuthorizationCode(kv, {
+      clientId: 'time', redirectUri: 'https://time.dondone.dev/auth/callback', state: 'state',
+      codeChallenge: await computeS256Challenge(CODE_VERIFIER), userId: 'user-123',
+      resource: 'https://api.dondone.dev', scopes: ['api:echo'],
+      session: { access_token: 'a', refresh_token: 'r', expires_at: 123, token_type: 'bearer' },
+    })
+    const response = await handleToken(new Request('https://auth.dondone.dev/api/token', {
+      method: 'POST', body: JSON.stringify({
+        client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', code,
+        code_verifier: CODE_VERIFIER,
+      }),
+    }), await env(kv), async () => [])
+
+    expect(response.status).toBe(403)
+    expect(await response.json()).toEqual({
+      error: 'permission_denied',
+      message: 'Requested scope is not granted to this user.',
+    })
+  })
+
   it('exchanges a code once for a Supabase session and Dondone API token', async () => {
     const kv = new MemoryKV() as unknown as KVNamespace
     const testEnv = await env(kv)
@@ -116,7 +138,7 @@ describe('POST /api/token', () => {
         }),
       })
 
-    const response = await handleToken(request(), testEnv)
+    const response = await handleToken(request(), testEnv, async () => ['api:echo'])
     const secondResponse = await handleToken(request(), testEnv)
     const body = (await response.json()) as typeof session & {
       api_access_token: string
@@ -252,7 +274,7 @@ describe('POST /api/token', () => {
         client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', code,
         code_verifier: CODE_VERIFIER, resource: 'https://api.dondone.dev',
       }),
-    }), testEnv)
+    }), testEnv, async () => ['api:echo'])
     const body = await response.json() as { api_access_token: string }
     const jwks = await (await handleJwks(new Request('https://auth.dondone.dev/api/jwks'), testEnv)).json() as { keys: JsonWebKey[] }
     const verified = await jwtVerify(body.api_access_token, await importJWK(jwks.keys[0], 'ES256'))
@@ -277,7 +299,7 @@ describe('POST /api/token', () => {
         client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', code,
         code_verifier: CODE_VERIFIER, resource: 'https://api.dondone.dev', scope: 'api:read',
       }),
-    }), testEnv)
+    }), testEnv, async () => ['api:read'])
     const body = await response.json() as { api_access_token: string }
     const jwks = await (await handleJwks(new Request('https://auth.dondone.dev/api/jwks'), testEnv)).json() as { keys: JsonWebKey[] }
     const verified = await jwtVerify(body.api_access_token, await importJWK(jwks.keys[0], 'ES256'), {
@@ -417,7 +439,8 @@ describe('POST /api/token', () => {
           code_verifier: CODE_VERIFIER,
         }),
       }),
-      await env(kv)
+      await env(kv),
+      async () => ['api:echo']
     )
 
     expect(response.status).toBe(200)

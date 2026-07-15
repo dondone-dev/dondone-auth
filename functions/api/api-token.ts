@@ -9,6 +9,11 @@ import { ApiError } from '../lib/errors'
 import { loadApprovedScopes, validateRequestedScopes } from '../lib/services'
 import { getSupabaseUser } from '../lib/supabase'
 import type { AuthEnv, SupabaseUser } from '../lib/types'
+import {
+  assertScopesGranted,
+  loadEffectivePermissions,
+  type LoadEffectivePermissions,
+} from '../lib/admin-auth'
 
 type VerifyAccessToken = (
   env: AuthEnv,
@@ -18,7 +23,8 @@ type VerifyAccessToken = (
 export async function handleApiToken(
   request: Request,
   env: AuthEnv,
-  verifyAccessToken: VerifyAccessToken = getSupabaseUser
+  verifyAccessToken: VerifyAccessToken = getSupabaseUser,
+  loadPermissions: LoadEffectivePermissions = loadEffectivePermissions
 ): Promise<Response> {
   try {
     const authorization = request.headers.get('Authorization')
@@ -50,6 +56,8 @@ export async function handleApiToken(
 
     const { scopes: approvedScopes } = await loadApprovedScopes(env, resource)
     const validScopes = validateRequestedScopes(requestedScopes, approvedScopes)
+    const permissions = await loadPermissions(env, user.id)
+    assertScopesGranted(validScopes, permissions)
 
     const token = await signDondoneAccessToken({
       env,

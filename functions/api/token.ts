@@ -16,10 +16,16 @@ import {
   validateRequestedScopes,
 } from '../lib/services'
 import type { AuthEnv } from '../lib/types'
+import {
+  assertScopesGranted,
+  loadEffectivePermissions,
+  type LoadEffectivePermissions,
+} from '../lib/admin-auth'
 
 export async function handleToken(
   request: Request,
-  env: AuthEnv
+  env: AuthEnv,
+  loadPermissions: LoadEffectivePermissions = loadEffectivePermissions
 ): Promise<Response> {
   try {
     const body = await readJsonObject(request)
@@ -78,6 +84,8 @@ export async function handleToken(
     }
     const { scopes: approvedScopes } = await loadApprovedScopes(env, record.resource)
     const validScopes = validateRequestedScopes(requestedScopes, approvedScopes)
+    const permissions = await loadPermissions(env, user.id)
+    assertScopesGranted(validScopes, permissions)
 
     const apiToken = await signDondoneAccessToken({
       env,

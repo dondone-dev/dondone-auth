@@ -35,6 +35,28 @@ async function env(): Promise<AuthEnv> {
 describe('POST /api/api-token', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it('rejects a catalog-valid scope the user is not granted', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
+      { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
+    ]))))
+    const response = await handleApiToken(
+      new Request('https://auth.dondone.dev/api/api-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: JSON.stringify({ resource: 'https://api.dondone.dev', scope: 'api:echo' }),
+      }),
+      await env(),
+      async () => ({ id: 'user-123' }),
+      async () => []
+    )
+
+    expect(response.status).toBe(403)
+    expect(await response.json()).toEqual({
+      error: 'permission_denied',
+      message: 'Requested scope is not granted to this user.',
+    })
+  })
+
   it('requires resource and scope without a rollout flag', async () => {
     const response = await handleApiToken(
       new Request('https://auth.dondone.dev/api/api-token', {
@@ -80,7 +102,8 @@ describe('POST /api/api-token', () => {
         body: JSON.stringify({ resource: 'https://api.dondone.dev', scope: 'api:echo' }),
       }),
       testEnv,
-      async () => user
+      async () => user,
+      async () => ['api:echo']
     )
     const body = (await response.json()) as {
       api_access_token: string
@@ -143,7 +166,7 @@ describe('POST /api/api-token', () => {
     const response = await handleApiToken(new Request('https://auth.dondone.dev/api/api-token', {
       method: 'POST', headers: { Authorization: 'Bearer token' },
       body: JSON.stringify({ resource: 'https://api.dondone.dev', scope: 'api:echo' }),
-    }), testEnv, async () => ({ id: 'user', email: 'user@example.com' }))
+    }), testEnv, async () => ({ id: 'user', email: 'user@example.com' }), async () => ['api:echo'])
     const body = await response.json() as { api_access_token: string }
     const jwks = await (await handleJwks(new Request('https://auth.dondone.dev/api/jwks'), testEnv)).json() as { keys: JsonWebKey[] }
     const verified = await jwtVerify(body.api_access_token, await importJWK(jwks.keys[0], 'ES256'), {
