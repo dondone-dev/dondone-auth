@@ -1,5 +1,6 @@
 name = "dondone-auth"
 compatibility_date = "2026-06-10"
+compatibility_flags = ["global_fetch_strictly_public"]
 pages_build_output_dir = "dist"
 
 [vars]

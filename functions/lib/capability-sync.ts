@@ -116,7 +116,12 @@ async function fetchAndParse(
   let response: Response
   try {
     response = await deps.fetchManifest(url)
-  } catch {
+  } catch (error) {
+    const reason =
+      error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error)
+    console.error('Capability manifest fetch failed.', { url, reason })
     throw new ApiError(502, 'capability_source_unavailable', `Could not reach ${url}.`)
   }
 

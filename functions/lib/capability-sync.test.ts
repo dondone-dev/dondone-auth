@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { handleCapabilitySync, recordSyncFailure, type SyncDeps } from './capability-sync'
 import type { AdminContext } from './admin-auth'
 import type { AuthEnv } from './types'
@@ -87,6 +87,10 @@ beforeEach(() => {
   rpcMock.mockResolvedValue({ data: [{ import_status: 'pending_review', created: true }], error: null })
 })
 
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
 describe('handleCapabilitySync', () => {
   it('fetches the derived well-known URL', async () => {
     const fetchManifest = vi.fn().mockResolvedValue(
@@ -167,13 +171,18 @@ describe('handleCapabilitySync', () => {
   })
 
   it('rejects network failure', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
     const deps: SyncDeps = {
-      fetchManifest: vi.fn().mockRejectedValue(new Error('network error')),
+      fetchManifest: vi.fn().mockRejectedValue(new TypeError('network error')),
     }
 
     await expect(
       handleCapabilitySync(mockEnv(), 'api', mockAdmin(), deps)
     ).rejects.toThrow('Could not reach')
+    expect(consoleError).toHaveBeenCalledWith('Capability manifest fetch failed.', {
+      url: 'https://api.dondone.dev/.well-known/oauth-protected-resource',
+      reason: 'TypeError: network error',
+    })
   })
 
   it('rejects non-JSON response', async () => {
