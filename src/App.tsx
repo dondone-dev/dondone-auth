@@ -297,7 +297,11 @@ function App() {
     try {
       const tokenResponse = await fetch('/api/api-token', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ resource: API_BASE, scope: 'api:echo' }),
       })
       const tokenBody = (await tokenResponse.json()) as {
         api_access_token?: string

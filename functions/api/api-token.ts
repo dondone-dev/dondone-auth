@@ -2,9 +2,15 @@ import {
   errorResponse,
   handleOptions,
   jsonResponse,
+  readJsonObject,
 } from '../lib/http'
-import { signDondoneApiToken } from '../lib/dondone-jwt'
+import {
+  isResourceTokensEnabled,
+  signDondoneAccessToken,
+  signDondoneApiToken,
+} from '../lib/dondone-jwt'
 import { ApiError } from '../lib/errors'
+import { loadApprovedScopes, validateRequestedScopes } from '../lib/services'
 import { getSupabaseUser } from '../lib/supabase'
 import type { AuthEnv, SupabaseUser } from '../lib/types'
 
@@ -26,7 +32,42 @@ export async function handleApiToken(
     }
 
     const user = await verifyAccessToken(env, accessToken)
-    return jsonResponse(request, env, await signDondoneApiToken(env, user, 'auth'))
+
+    if (!isResourceTokensEnabled(env)) {
+      return jsonResponse(request, env, await signDondoneApiToken(env, user, 'auth'))
+    }
+
+    const body = await readJsonObject(request)
+    const resource = body.resource
+    if (typeof resource !== 'string' || resource.trim() === '') {
+      throw new ApiError(400, 'invalid_target', 'resource parameter is required when resource tokens are enabled.')
+    }
+
+    if (Array.isArray(body.scope) && !body.scope.every((scope) => typeof scope === 'string')) {
+      throw new ApiError(400, 'invalid_scope', 'scope array must contain only strings.')
+    }
+    const requestedScopes = Array.isArray(body.scope)
+      ? body.scope as string[]
+      : typeof body.scope === 'string'
+        ? body.scope.split(' ').filter(Boolean)
+        : []
+
+    if (requestedScopes.length === 0) {
+      throw new ApiError(400, 'invalid_scope', 'A non-empty scope is required when resource tokens are enabled.')
+    }
+
+    const { scopes: approvedScopes } = await loadApprovedScopes(env, resource)
+    const validScopes = validateRequestedScopes(requestedScopes, approvedScopes)
+
+    const token = await signDondoneAccessToken({
+      env,
+      user,
+      clientId: 'auth',
+      resource,
+      scopes: validScopes,
+    })
+
+    return jsonResponse(request, env, token)
   } catch (error) {
     return errorResponse(request, env, error)
   }

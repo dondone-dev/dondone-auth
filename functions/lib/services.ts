@@ -178,3 +178,55 @@ export function normalizeUrl(value: string): string {
     throw new ApiError(400, 'invalid_redirect_uri', 'redirect_uri must be a valid URL.')
   }
 }
+
+interface ActiveResourceCapabilityRow {
+  service_key: string
+  resource_uri: string
+  key: string
+}
+
+/**
+ * Load the approved capability catalog for a resource URI.
+ * Returns the set of valid scope keys for the resource.
+ */
+export async function loadApprovedScopes(
+  env: AuthEnv,
+  resourceUri: string
+): Promise<{ serviceKey: string; scopes: Set<string> }> {
+  const response = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/active_resource_capabilities?resource_uri=eq.${encodeURIComponent(resourceUri)}&oauth_scope=eq.true&select=service_key,resource_uri,key`,
+    { headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY } }
+  )
+  if (!response.ok) {
+    throw new ApiError(500, 'registry_unavailable', 'Could not load service registry.')
+  }
+  const rows = (await response.json()) as ActiveResourceCapabilityRow[]
+  if (rows.length === 0) {
+    throw new ApiError(400, 'invalid_target', `No active service registered for resource "${resourceUri}".`)
+  }
+  const serviceKey = rows[0].service_key
+  if (!rows.every((row) => row.service_key === serviceKey && row.resource_uri === resourceUri)) {
+    throw new ApiError(500, 'registry_unavailable', 'Resource registry response was inconsistent.')
+  }
+  return { serviceKey, scopes: new Set(rows.map((r) => r.key)) }
+}
+
+/**
+ * Validate requested scopes against the approved catalog.
+ * Returns only the scopes that are both requested and approved.
+ */
+export function validateRequestedScopes(
+  requested: string[],
+  approved: Set<string>
+): string[] {
+  const normalized = [...new Set(requested)].sort()
+  const invalid = normalized.filter((s) => !approved.has(s))
+  if (invalid.length > 0) {
+    throw new ApiError(
+      400,
+      'invalid_scope',
+      `Scope(s) not in approved catalog: ${invalid.join(', ')}.`
+    )
+  }
+  return normalized
+}

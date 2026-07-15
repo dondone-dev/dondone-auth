@@ -10,6 +10,8 @@ SERVICE_REGISTRY_SOURCE = "db"
 DONDONE_JWT_KID = "dondone-auth-es256-1"
 DONDONE_JWT_ISSUER = "https://auth.dondone.dev"
 DONDONE_API_AUDIENCE = "https://api.dondone.dev"
+RESOURCE_ACCESS_TOKENS_ENABLED = "false"
+ADMIN_ALLOWED_ORIGINS = "https://console.dondone.dev"
 
 [[kv_namespaces]]
 binding = "AUTH_CODES" # simple-auth-codes

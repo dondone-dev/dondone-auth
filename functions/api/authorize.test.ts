@@ -96,6 +96,110 @@ describe('POST /api/authorize', () => {
     expect(body.redirect_to).not.toContain('refresh-token')
   })
 
+  it('binds normalized resource and scope to the authorization code', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
+      { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
+      { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:read' },
+    ]))))
+    const testEnv = await env()
+    const kv = testEnv.AUTH_CODES as unknown as MemoryKV
+    const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
+      method: 'POST', body: JSON.stringify({
+        client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', state: 'state',
+        code_challenge: 'challenge', access_token: 'access', refresh_token: 'refresh', expires_at: 123,
+        token_type: 'bearer', resource: 'https://api.dondone.dev', scope: 'api:read  api:echo api:read',
+      }),
+    }), testEnv, async () => ({ id: 'user-123' }))
+    const code = new URL(((await response.json()) as { redirect_to: string }).redirect_to).searchParams.get('code')!
+    const stored = JSON.parse(kv.values.get(code)!)
+
+    expect(stored.resource).toBe('https://api.dondone.dev')
+    expect(stored.scopes).toEqual(['api:echo', 'api:read'])
+  })
+
+  it('requires resource and non-empty scope in resource-token mode without writing a code', async () => {
+    const testEnv = { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
+    const kv = testEnv.AUTH_CODES as unknown as MemoryKV
+    const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
+      method: 'POST', body: JSON.stringify({
+        client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', state: 'state',
+        code_challenge: 'challenge', access_token: 'access', refresh_token: 'refresh', expires_at: 123,
+        token_type: 'bearer', scope: 'api:echo',
+      }),
+    }), testEnv, async () => ({ id: 'user' }))
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'invalid_target' })
+    expect(kv.values.size).toBe(0)
+  })
+
+  it('rejects malformed scope arrays without writing a code', async () => {
+    const testEnv = { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
+    const kv = testEnv.AUTH_CODES as unknown as MemoryKV
+    const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
+      method: 'POST', body: JSON.stringify({
+        client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', state: 'state',
+        code_challenge: 'challenge', access_token: 'access', refresh_token: 'refresh', expires_at: 123,
+        token_type: 'bearer', resource: 'https://api.dondone.dev', scope: ['api:echo', 42],
+      }),
+    }), testEnv, async () => ({ id: 'user' }))
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'invalid_scope' })
+    expect(kv.values.size).toBe(0)
+  })
+
+  it('rejects unknown resources and unapproved scopes without writing a code', async () => {
+    for (const [rows, resource, scope, error] of [
+      [[], 'https://unknown.dondone.dev', 'unknown:read', 'invalid_target'],
+      [[{ service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' }], 'https://api.dondone.dev', 'api:read', 'invalid_scope'],
+    ] as const) {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(rows))))
+      const testEnv = { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
+      const kv = testEnv.AUTH_CODES as unknown as MemoryKV
+      const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
+        method: 'POST', body: JSON.stringify({
+          client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', state: 'state',
+          code_challenge: 'challenge', access_token: 'access', refresh_token: 'refresh', expires_at: 123,
+          token_type: 'bearer', resource, scope,
+        }),
+      }), testEnv, async () => ({ id: 'user' }))
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({ error })
+      expect(kv.values.size).toBe(0)
+    }
+  })
+
+  it('validates explicit resource/scope types even when resource-token mode is disabled', async () => {
+    const testEnv = await env()
+    const kv = testEnv.AUTH_CODES as unknown as MemoryKV
+    const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
+      method: 'POST', body: JSON.stringify({
+        client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', state: 'state',
+        code_challenge: 'challenge', access_token: 'access', refresh_token: 'refresh', expires_at: 123,
+        token_type: 'bearer', resource: 42, scope: 'api:echo',
+      }),
+    }), testEnv, async () => ({ id: 'user' }))
+    expect(response.status).toBe(400)
+    expect(kv.values.size).toBe(0)
+  })
+
+  it('accepts and normalizes a valid string-array scope after catalog validation', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
+      { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
+      { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:read' },
+    ]))))
+    const testEnv = { ...(await env()), RESOURCE_ACCESS_TOKENS_ENABLED: 'true' }
+    const kv = testEnv.AUTH_CODES as unknown as MemoryKV
+    const response = await handleAuthorize(new Request('https://auth.dondone.dev/api/authorize', {
+      method: 'POST', body: JSON.stringify({
+        client_id: 'time', redirect_uri: 'https://time.dondone.dev/auth/callback', state: 'state',
+        code_challenge: 'challenge', access_token: 'access', refresh_token: 'refresh', expires_at: 123,
+        token_type: 'bearer', resource: 'https://api.dondone.dev', scope: ['api:read', 'api:echo', 'api:read'],
+      }),
+    }), testEnv, async () => ({ id: 'user' }))
+    const code = new URL(((await response.json()) as { redirect_to: string }).redirect_to).searchParams.get('code')!
+    expect(JSON.parse(kv.values.get(code)!).scopes).toEqual(['api:echo', 'api:read'])
+  })
+
   it('rejects unknown clients before creating a code', async () => {
     const response = await handleAuthorize(
       new Request('https://auth.dondone.dev/api/authorize', {

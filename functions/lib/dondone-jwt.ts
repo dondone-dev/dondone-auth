@@ -12,6 +12,14 @@ export interface DondoneApiToken {
   api_expires_in: number
 }
 
+export function isResourceTokensEnabled(env: AuthEnv): boolean {
+  return env.RESOURCE_ACCESS_TOKENS_ENABLED === 'true'
+}
+
+/**
+ * Legacy token signing — fixed audience and scope.
+ * Used when RESOURCE_ACCESS_TOKENS_ENABLED is not 'true'.
+ */
 export async function signDondoneApiToken(
   env: AuthEnv,
   user: SupabaseUser,
@@ -32,6 +40,50 @@ export async function signDondoneApiToken(
     })
     .setIssuer(env.DONDONE_JWT_ISSUER)
     .setAudience(env.DONDONE_API_AUDIENCE)
+    .setSubject(user.id)
+    .setJti(crypto.randomUUID())
+    .setIssuedAt()
+    .setExpirationTime(`${API_TOKEN_EXPIRES_IN_SECONDS}s`)
+    .sign(key)
+
+  return {
+    api_access_token: jwt,
+    api_token_type: 'Bearer',
+    api_expires_in: API_TOKEN_EXPIRES_IN_SECONDS,
+  }
+}
+
+export interface ResourceTokenParams {
+  env: AuthEnv
+  user: SupabaseUser
+  clientId: string
+  resource: string
+  scopes: string[]
+}
+
+/**
+ * Resource-aware token signing — per-resource audience, typ=at+jwt,
+ * scopes filtered against the approved catalog.
+ */
+export async function signDondoneAccessToken(
+  params: ResourceTokenParams
+): Promise<DondoneApiToken> {
+  const { env, user, clientId, resource, scopes } = params
+  const privateJwk = parsePrivateJwk(env.DONDONE_JWT_PRIVATE_JWK)
+  const key = await importJWK(privateJwk, 'ES256')
+
+  const jwt = await new SignJWT({
+    email: user.email,
+    client_id: clientId,
+    scope: scopes.join(' '),
+  })
+    .setProtectedHeader({
+      alg: 'ES256',
+      kid: env.DONDONE_JWT_KID,
+      typ: 'at+jwt',
+    })
+    .setIssuer(env.DONDONE_JWT_ISSUER)
+    .setAudience(resource)
     .setSubject(user.id)
     .setJti(crypto.randomUUID())
     .setIssuedAt()

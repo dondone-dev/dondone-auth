@@ -5,12 +5,16 @@ const REDIRECT_URI_PARAM = 'redirect_uri'
 const STATE_PARAM = 'state'
 const CODE_CHALLENGE_PARAM = 'code_challenge'
 const CODE_CHALLENGE_METHOD_PARAM = 'code_challenge_method'
+const RESOURCE_PARAM = 'resource'
+const SCOPE_PARAM = 'scope'
 
 export interface AuthorizationRequest {
   clientId: string
   redirectUri: string
   state: string
   codeChallenge: string
+  resource?: string
+  scope?: string
 }
 
 export function hasAuthorizationParams(): boolean {
@@ -30,6 +34,8 @@ export function parseAuthorizationRequest(): AuthorizationRequest | null {
   const state = params.get(STATE_PARAM)
   const codeChallenge = params.get(CODE_CHALLENGE_PARAM)
   const codeChallengeMethod = params.get(CODE_CHALLENGE_METHOD_PARAM)
+  const resource = params.get(RESOURCE_PARAM)
+  const rawScope = params.get(SCOPE_PARAM)
 
   if (!clientId || !redirectUri || !state || !codeChallenge) return null
   // 仅支持 S256；缺省视为 S256。
@@ -41,7 +47,18 @@ export function parseAuthorizationRequest(): AuthorizationRequest | null {
     return null
   }
 
-  return { clientId, redirectUri, state, codeChallenge }
+  if (resource) {
+    try {
+      new URL(resource)
+    } catch {
+      return null
+    }
+  }
+  const scope = rawScope
+    ? [...new Set(rawScope.split(/\s+/).filter(Boolean))].sort().join(' ')
+    : undefined
+
+  return { clientId, redirectUri, state, codeChallenge, resource: resource ?? undefined, scope }
 }
 
 export function originOf(url: string): string {
@@ -63,6 +80,8 @@ export async function createAuthorizationRedirect(
       state: request.state,
       code_challenge: request.codeChallenge,
       code_challenge_method: 'S256',
+      resource: request.resource,
+      scope: request.scope,
       access_token: session.access_token,
       refresh_token: session.refresh_token,
       expires_at: session.expires_at ?? 0,

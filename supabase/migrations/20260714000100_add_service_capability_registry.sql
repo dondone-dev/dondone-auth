@@ -1,0 +1,1 @@
+../../docs/sql/migrations/20260714_add_service_capability_registry.sql

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { assertRegisteredService, findRegisteredService, loadServiceRegistry } from './services'
+import { assertRegisteredService, findRegisteredService, loadApprovedScopes, loadServiceRegistry, validateRequestedScopes } from './services'
 import { ApiError } from './errors'
 import type { AuthEnv, ServiceRegistry } from './types'
 
@@ -283,5 +283,31 @@ describe('loadServiceRegistry source switch', () => {
     const result = await loadServiceRegistry(baseEnv({ SERVICE_REGISTRY_SOURCE: 'db' }))
 
     expect(result.time?.name).toBe('Local Time')
+  })
+})
+
+describe('loadApprovedScopes', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('loads the anon-safe active resource projection without querying services', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify([
+      { service_key: 'api', resource_uri: 'https://api.dondone.dev', key: 'api:echo' },
+    ]), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await loadApprovedScopes(baseEnv(), 'https://api.dondone.dev')
+
+    expect(result.serviceKey).toBe('api')
+    expect([...result.scopes]).toEqual(['api:echo'])
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/rest/v1/active_resource_capabilities')
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain('/rest/v1/services?')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('validateRequestedScopes', () => {
+  it('returns a deterministic de-duplicated scope list', () => {
+    expect(validateRequestedScopes(['api:read', 'api:echo', 'api:read'], new Set(['api:echo', 'api:read'])))
+      .toEqual(['api:echo', 'api:read'])
   })
 })
