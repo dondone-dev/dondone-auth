@@ -89,9 +89,27 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('handleCapabilitySync', () => {
+  it('uses Cloudflare-compatible manual redirect handling', async () => {
+    const fetchManifest = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(validManifest()), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    vi.stubGlobal('fetch', fetchManifest)
+
+    await handleCapabilitySync(mockEnv(), 'api', mockAdmin())
+
+    expect(fetchManifest).toHaveBeenCalledWith(
+      'https://api.dondone.dev/.well-known/oauth-protected-resource',
+      expect.objectContaining({ redirect: 'manual' })
+    )
+  })
+
   it('fetches the derived well-known URL', async () => {
     const fetchManifest = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(validManifest()), {
@@ -168,6 +186,21 @@ describe('handleCapabilitySync', () => {
     await expect(
       handleCapabilitySync(mockEnv(), 'api', mockAdmin(), deps)
     ).rejects.toThrow('HTTP 500')
+  })
+
+  it('rejects a manifest redirect instead of following it', async () => {
+    const deps: SyncDeps = {
+      fetchManifest: vi.fn().mockResolvedValue(
+        new Response('', {
+          status: 302,
+          headers: { Location: 'https://untrusted.example/manifest' },
+        })
+      ),
+    }
+
+    await expect(
+      handleCapabilitySync(mockEnv(), 'api', mockAdmin(), deps)
+    ).rejects.toThrow('HTTP 302')
   })
 
   it('rejects network failure', async () => {

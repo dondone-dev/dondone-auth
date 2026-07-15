@@ -31,7 +31,7 @@ const defaultDeps: SyncDeps = {
   fetchManifest: (url) =>
     fetch(url, {
       headers: { Accept: 'application/json' },
-      redirect: 'error',
+      redirect: 'manual',
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     }),
 }
