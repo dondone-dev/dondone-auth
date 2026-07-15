@@ -164,6 +164,15 @@ begin
     if existing.manifest_sha256 <> p_manifest_sha256 then
       raise exception using errcode = '23505', message = 'catalog_version_conflict';
     end if;
+    update public.services set
+      capability_sync_status = case
+        when active_capability_version is not null then 'active'
+        when existing.import_status = 'pending_review' then 'pending_review'
+        else 'failed'
+      end,
+      capability_last_synced_at = now(),
+      capability_last_error = null
+    where key = p_service_key;
     insert into public.service_capability_audit(actor, service_key, catalog_version, action, outcome, detail)
     values (p_actor, p_service_key, p_catalog_version, 'sync_succeeded', 'unchanged',
       jsonb_build_object('manifest_sha256', p_manifest_sha256, 'status', existing.import_status));

@@ -43,6 +43,7 @@ SQL
 docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres -f /workspace/docs/sql/authorization.sql >/dev/null
 docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres -f /workspace/docs/sql/migrations/20260713_add_service_redirect_uris.sql >/dev/null
 docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres -f /workspace/docs/sql/migrations/20260714_add_service_capability_registry.sql >/dev/null
+docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres -f /workspace/supabase/migrations/20260715000600_restore_idempotent_capability_sync_state.sql >/dev/null
 
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres <<'SQL'
 -- Recreate the historical direct-grant table when the canonical schema no
@@ -175,6 +176,8 @@ do $$ begin
 end $$;
 
 -- Identical synchronization must not downgrade the approved version.
+select public.record_service_capability_sync_failure(
+  'api','00000000-0000-0000-0000-000000000001','stale fetch failure');
 select * from public.import_service_capability_version(
   'api','v1','hash-v1',
   '{"resource":"https://api.dondone.dev","authorization_servers":["https://auth.dondone.dev"],"scopes_supported":["api:echo","api:tier:vip"],"vendor_extension":{"revision":1},"dondone_capabilities":{"schema_version":1,"catalog_version":"v1","permissions":[{"key":"api:echo","description":"Echo"},{"key":"api:tier:vip","description":"VIP"}],"roles":[{"key":"basic","name":"Basic","permission_keys":["api:echo"]},{"key":"vip","name":"VIP","permission_keys":["api:echo","api:tier:vip"]}]}}'::jsonb,
@@ -183,11 +186,43 @@ do $$ begin
   if (select import_status from public.service_capability_versions where service_key='api' and catalog_version='v1') <> 'approved' then
     raise exception 'idempotent sync downgraded approved version';
   end if;
+  if (select capability_sync_status from public.services where key='api') <> 'active' then
+    raise exception 'idempotent successful sync did not restore active service status';
+  end if;
+  if (select capability_last_error from public.services where key='api') is not null then
+    raise exception 'idempotent successful sync did not clear stale service error';
+  end if;
   if not exists (select 1 from public.permission_groups where service_key='api' and key='vip' and is_system and status='active') then
     raise exception 'system role projection missing';
   end if;
   if (select manifest->'vendor_extension'->>'revision' from public.service_capability_versions where service_key='api' and catalog_version='v1') <> '1' then
     raise exception 'raw manifest extension was not stored';
+  end if;
+end $$;
+
+-- Re-synchronizing an unchanged rejected version must not invent a pending
+-- review, but it must clear any stale transport error from the last attempt.
+select * from public.import_service_capability_version(
+  'time','rejected-v1','time-rejected-hash',
+  '{"resource":"https://time-api.dondone.dev","authorization_servers":["https://auth.dondone.dev"],"scopes_supported":[],"dondone_capabilities":{"schema_version":1,"catalog_version":"rejected-v1","permissions":[],"roles":[]}}'::jsonb,
+  '00000000-0000-0000-0000-000000000001');
+select public.reject_service_capability_version(
+  'time','rejected-v1','00000000-0000-0000-0000-000000000001','not acceptable');
+select public.record_service_capability_sync_failure(
+  'time','00000000-0000-0000-0000-000000000001','stale rejected fetch failure');
+select * from public.import_service_capability_version(
+  'time','rejected-v1','time-rejected-hash',
+  '{"resource":"https://time-api.dondone.dev","authorization_servers":["https://auth.dondone.dev"],"scopes_supported":[],"dondone_capabilities":{"schema_version":1,"catalog_version":"rejected-v1","permissions":[],"roles":[]}}'::jsonb,
+  '00000000-0000-0000-0000-000000000001');
+do $$ begin
+  if (select import_status from public.service_capability_versions where service_key='time' and catalog_version='rejected-v1') <> 'rejected' then
+    raise exception 'idempotent sync reopened a rejected version';
+  end if;
+  if (select capability_sync_status from public.services where key='time') <> 'failed' then
+    raise exception 'idempotent rejected sync invented a pending review';
+  end if;
+  if (select capability_last_error from public.services where key='time') is not null then
+    raise exception 'idempotent rejected sync did not clear stale transport error';
   end if;
 end $$;
 
