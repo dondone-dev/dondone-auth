@@ -400,7 +400,8 @@ insert into auth.users(id,email) values
   ('00000000-0000-0000-0000-000000000002','merge@example.com'),
   ('00000000-0000-0000-0000-000000000003','permanent@example.com'),
   ('00000000-0000-0000-0000-000000000004','expired@example.com'),
-  ('00000000-0000-0000-0000-000000000005','revoked@example.com');
+  ('00000000-0000-0000-0000-000000000005','revoked@example.com'),
+  ('00000000-0000-0000-0000-000000000007','existing-permanent@example.com');
 
 insert into public.user_permission_groups(user_id,group_id,status,granted_by,expires_at)
 select '00000000-0000-0000-0000-000000000002',id,'active',
@@ -410,12 +411,17 @@ insert into public.user_permission_groups(user_id,group_id,status,granted_by,exp
 select '00000000-0000-0000-0000-000000000003',id,'revoked',
        '00000000-0000-0000-0000-000000000001','2029-01-01T00:00:00Z'
 from public.permission_groups where service_key='api' and key='caller';
+insert into public.user_permission_groups(user_id,group_id,status,granted_by,expires_at)
+select '00000000-0000-0000-0000-000000000007',id,'active',
+       '00000000-0000-0000-0000-000000000001',null
+from public.permission_groups where service_key='api' and key='caller';
 
 insert into public.user_permissions(user_id,permission_key,status,granted_by,expires_at) values
   ('00000000-0000-0000-0000-000000000002','api:echo','active','00000000-0000-0000-0000-000000000001','2027-01-01T00:00:00Z'),
   ('00000000-0000-0000-0000-000000000003','api:echo','active','00000000-0000-0000-0000-000000000002',null),
   ('00000000-0000-0000-0000-000000000004','api:echo','active','00000000-0000-0000-0000-000000000001',now() - interval '1 day'),
-  ('00000000-0000-0000-0000-000000000005','api:echo','revoked','00000000-0000-0000-0000-000000000001',null);
+  ('00000000-0000-0000-0000-000000000005','api:echo','revoked','00000000-0000-0000-0000-000000000001',null),
+  ('00000000-0000-0000-0000-000000000007','api:echo','active','00000000-0000-0000-0000-000000000002','2099-01-01T00:00:00Z');
 SQL
 
 if docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres \
@@ -474,6 +480,14 @@ begin
       and expires_at is null
   ) then
     raise exception 'permanent direct Caller grant did not win union expiry';
+  end if;
+  if not exists (
+    select 1 from public.user_permission_groups
+    where user_id='00000000-0000-0000-0000-000000000007'
+      and group_id=caller_group and status='active'
+      and expires_at is null
+  ) then
+    raise exception 'existing permanent Caller membership did not win union expiry';
   end if;
   if exists (
     select 1 from public.user_permission_groups
