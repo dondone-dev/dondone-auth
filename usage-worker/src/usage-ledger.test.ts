@@ -7,12 +7,14 @@ import {
   validateClockSkew,
   validateLedgerAdjustmentRequest,
   validateLedgerRequest,
+  type CounterStore,
+  type OperationStore,
 } from './usage-ledger-logic'
 
 const operationId = '11111111-1111-4111-8111-111111111111'
 const nowMs = Date.parse('2026-07-16T12:00:00.000Z')
 
-function memoryStores() {
+function memoryStores(): { counters: CounterStore; operations: OperationStore } {
   const counters = new Map<string, number>()
   const operations = new Map<string, { request_hash: string; response_json: string }>()
 
@@ -30,8 +32,6 @@ function memoryStores() {
         operations.set(operationId, { request_hash: requestHash, response_json: responseJson })
       },
     },
-    countersMap: counters,
-    operationsMap: operations,
   }
 }
 

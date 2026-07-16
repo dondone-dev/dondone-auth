@@ -13,12 +13,14 @@ import {
   type OperationStore,
 } from './usage-ledger-logic'
 
-export class UsageLedger extends DurableObject {
+export class UsageLedger extends DurableObject<unknown> {
+  private storage: DurableObjectStorage
   private sql: SqlStorage
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env)
-    this.sql = ctx.storage.sql
+    this.storage = ctx.storage
+    this.sql = this.storage.sql
     ctx.blockConcurrencyWhile(async () => {
       this.sql.exec(`
         create table if not exists counters (
@@ -70,20 +72,13 @@ export class UsageLedger extends DurableObject {
     const skewError = validateClockSkew(parsed.now_ms, serverNow)
     if (skewError) return jsonError(skewError, 400)
 
-    this.sql.exec('BEGIN')
-    try {
-      const result = processConsume(parsed, this.counterStore(), this.operationStore(), serverNow)
-      if ('conflict' in result) {
-        this.sql.exec('ROLLBACK')
-        return jsonError('operation_conflict', 409)
-      }
-      this.sql.exec('COMMIT')
-      this.cleanup(serverNow, parsed.now_ms)
-      return Response.json(result)
-    } catch (e) {
-      this.sql.exec('ROLLBACK')
-      throw e
-    }
+    const result = this.storage.transactionSync(() =>
+      processConsume(parsed, this.counterStore(), this.operationStore(), serverNow)
+    )
+    if ('conflict' in result) return jsonError('operation_conflict', 409)
+
+    this.cleanup(serverNow, parsed.now_ms)
+    return Response.json(result)
   }
 
   private async handleStatus(request: Request): Promise<Response> {
@@ -119,20 +114,13 @@ export class UsageLedger extends DurableObject {
     const skewError = validateClockSkew(parsed.now_ms, serverNow)
     if (skewError) return jsonError(skewError, 400)
 
-    this.sql.exec('BEGIN')
-    try {
-      const result = processAdjust(parsed, this.counterStore(), this.operationStore(), serverNow)
-      if ('conflict' in result) {
-        this.sql.exec('ROLLBACK')
-        return jsonError('operation_conflict', 409)
-      }
-      this.sql.exec('COMMIT')
-      this.cleanup(serverNow, parsed.now_ms)
-      return Response.json(result)
-    } catch (e) {
-      this.sql.exec('ROLLBACK')
-      throw e
-    }
+    const result = this.storage.transactionSync(() =>
+      processAdjust(parsed, this.counterStore(), this.operationStore(), serverNow)
+    )
+    if ('conflict' in result) return jsonError('operation_conflict', 409)
+
+    this.cleanup(serverNow, parsed.now_ms)
+    return Response.json(result)
   }
 
   private counterStore(): CounterStore {
