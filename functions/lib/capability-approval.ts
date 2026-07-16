@@ -28,6 +28,10 @@ export interface DiffClassification {
   removed_roles: string[]
   changed_role_memberships: string[]
   description_changes: string[]
+  added_controls: string[]
+  removed_controls: string[]
+  changed_controls: string[]
+  removed_control_options: string[]
 }
 
 interface VersionRow {
@@ -38,10 +42,31 @@ interface VersionRow {
   import_status: string
 }
 
+interface ManifestControlJson {
+  key: string
+  kind: string
+  name?: string
+  description?: string
+  unit?: string
+  window?: string
+  window_seconds?: number
+  minimum?: number
+  maximum?: number
+  options?: Array<{ value: string; label: string }>
+}
+
+interface ManifestPermissionJson {
+  key: string
+  name?: string
+  description?: string
+  usage_controls?: ManifestControlJson[]
+}
+
 interface ManifestJson {
   scopes_supported?: string[]
   dondone_capabilities?: {
-    permissions?: Array<{ key: string; description: string }>
+    schema_version?: number
+    permissions?: ManifestPermissionJson[]
     roles?: Array<{ key: string; name: string; description?: string; permission_keys: string[] }>
   }
 }
@@ -218,12 +243,21 @@ export function classifyDiff(
     removed_roles: [],
     changed_role_memberships: [],
     description_changes: [],
+    added_controls: [],
+    removed_controls: [],
+    changed_controls: [],
+    removed_control_options: [],
   }
 
   if (!oldManifest?.dondone_capabilities) {
     result.added_permissions = (newManifest.dondone_capabilities?.permissions ?? []).map((p) => p.key)
     result.added_roles = (newManifest.dondone_capabilities?.roles ?? []).map((r) => r.key)
     result.added_scopes = [...new Set(newManifest.scopes_supported ?? [])].sort()
+    for (const perm of newManifest.dondone_capabilities?.permissions ?? []) {
+      for (const ctrl of perm.usage_controls ?? []) {
+        result.added_controls.push(`${perm.key}#${ctrl.key}`)
+      }
+    }
     return result
   }
 
@@ -247,6 +281,8 @@ export function classifyDiff(
       }
     }
   }
+
+  classifyControlDiffs(oldPerms, newPerms, result)
 
   const oldRoles = new Map(
     (oldManifest.dondone_capabilities.roles ?? []).map((r) => [r.key, r])
@@ -287,7 +323,11 @@ export function classifyDiff(
     result.removed_permissions.length > 0 ||
     result.removed_scopes.length > 0 ||
     result.removed_roles.length > 0 ||
-    result.changed_role_memberships.length > 0
+    result.changed_role_memberships.length > 0 ||
+    result.added_controls.length > 0 ||
+    result.removed_controls.length > 0 ||
+    result.changed_controls.length > 0 ||
+    result.removed_control_options.length > 0
 
   if (hasBreaking) {
     result.change_type = 'breaking'
@@ -301,4 +341,86 @@ export function classifyDiff(
   }
 
   return result
+}
+
+function classifyControlDiffs(
+  oldPerms: Map<string, ManifestPermissionJson>,
+  newPerms: Map<string, ManifestPermissionJson>,
+  result: DiffClassification
+): void {
+  for (const [permKey, newPerm] of newPerms) {
+    const oldPerm = oldPerms.get(permKey)
+    const oldControls = new Map((oldPerm?.usage_controls ?? []).map((c) => [c.key, c]))
+    const newControls = new Map((newPerm.usage_controls ?? []).map((c) => [c.key, c]))
+
+    for (const [ctrlKey, newCtrl] of newControls) {
+      const id = `${permKey}#${ctrlKey}`
+      const oldCtrl = oldControls.get(ctrlKey)
+      if (!oldCtrl) {
+        result.added_controls.push(id)
+        continue
+      }
+      if (isControlStructurallyChanged(oldCtrl, newCtrl)) {
+        result.changed_controls.push(id)
+      } else if (isControlLabelOnly(oldCtrl, newCtrl)) {
+        if (!result.description_changes.includes(id)) {
+          result.description_changes.push(id)
+        }
+      }
+
+      if (oldCtrl.kind === newCtrl.kind && (oldCtrl.kind === 'enum_one' || oldCtrl.kind === 'enum_many')) {
+        const oldValues = new Set((oldCtrl.options ?? []).map((o) => o.value))
+        const newValues = new Set((newCtrl.options ?? []).map((o) => o.value))
+        for (const v of oldValues) {
+          if (!newValues.has(v)) {
+            result.removed_control_options.push(`${id}:${v}`)
+          }
+        }
+      }
+    }
+
+    for (const ctrlKey of oldControls.keys()) {
+      if (!newControls.has(ctrlKey)) {
+        result.removed_controls.push(`${permKey}#${ctrlKey}`)
+      }
+    }
+  }
+
+  for (const [permKey, oldPerm] of oldPerms) {
+    if (!newPerms.has(permKey)) {
+      for (const ctrl of oldPerm.usage_controls ?? []) {
+        result.removed_controls.push(`${permKey}#${ctrl.key}`)
+      }
+    }
+  }
+}
+
+function isControlStructurallyChanged(a: ManifestControlJson, b: ManifestControlJson): boolean {
+  if (a.kind !== b.kind) return true
+  if (a.unit !== b.unit) return true
+  if (a.window !== b.window) return true
+  if (a.window_seconds !== b.window_seconds) return true
+  if (a.minimum !== b.minimum) return true
+  if (a.maximum !== b.maximum) return true
+
+  if ((a.kind === 'enum_one' || a.kind === 'enum_many') && a.kind === b.kind) {
+    const oldValues = (a.options ?? []).map((o) => o.value).sort()
+    const newValues = (b.options ?? []).map((o) => o.value).sort()
+    if (oldValues.join('\0') !== newValues.join('\0')) return true
+  }
+
+  return false
+}
+
+function isControlLabelOnly(a: ManifestControlJson, b: ManifestControlJson): boolean {
+  if (a.name !== b.name) return true
+  if (a.description !== b.description) return true
+  if ((a.kind === 'enum_one' || a.kind === 'enum_many') && a.kind === b.kind) {
+    const oldLabels = new Map((a.options ?? []).map((o) => [o.value, o.label]))
+    const newLabels = new Map((b.options ?? []).map((o) => [o.value, o.label]))
+    for (const [v, label] of oldLabels) {
+      if (newLabels.has(v) && newLabels.get(v) !== label) return true
+    }
+  }
+  return false
 }

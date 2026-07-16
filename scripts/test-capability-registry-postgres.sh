@@ -553,4 +553,392 @@ do $$ begin
 end $$;
 SQL
 
+# ---- Usage Policy migration ----
+
+# Resolve conflicting memberships from test fixtures before migration.
+# Users created with the old trigger have basic(api) active alongside
+# caller(api) active. In production these would be resolved via Console.
+docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres <<'SQL'
+update public.user_permission_groups upg
+set status = 'revoked', updated_at = now()
+where upg.status = 'active'
+  and exists (
+    select 1 from public.permission_groups pg
+    where pg.id = upg.group_id and pg.service_key = 'api' and pg.key = 'basic'
+  )
+  and exists (
+    select 1 from public.user_permission_groups other
+    join public.permission_groups opg on opg.id = other.group_id
+    where other.user_id = upg.user_id
+      and other.status = 'active'
+      and opg.service_key = 'api'
+      and opg.key <> 'basic'
+  );
+SQL
+
+docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres \
+  -f /workspace/supabase/migrations/20260716000100_add_usage_policies.sql >/dev/null
+
+docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres <<'SQL'
+-- Verify schema additions exist
+do $$ begin
+  if not exists (select 1 from information_schema.columns where table_name='services' and column_name='default_group_id') then
+    raise exception 'default_group_id column missing';
+  end if;
+  if not exists (select 1 from information_schema.tables where table_name='usage_policies') then
+    raise exception 'usage_policies table missing';
+  end if;
+  if not exists (select 1 from information_schema.tables where table_name='usage_policy_rules') then
+    raise exception 'usage_policy_rules table missing';
+  end if;
+  if not exists (select 1 from information_schema.tables where table_name='usage_adjustment_audit') then
+    raise exception 'usage_adjustment_audit table missing';
+  end if;
+  if not exists (select 1 from information_schema.columns where table_name='user_permission_groups' and column_name='service_key') then
+    raise exception 'user_permission_groups.service_key column missing';
+  end if;
+  if not exists (select 1 from information_schema.columns where table_name='permission_groups' and column_name='usage_policy_id') then
+    raise exception 'permission_groups.usage_policy_id column missing';
+  end if;
+end $$;
+
+-- Verify service_key was backfilled on user_permission_groups
+do $$ begin
+  if exists (select 1 from public.user_permission_groups where service_key is null) then
+    raise exception 'service_key backfill incomplete';
+  end if;
+end $$;
+
+-- The usage-policy fixtures exercise the active v2 control contract.
+update public.service_capabilities cap
+set usage_controls = '[
+  {"key":"daily_calls","name":"Daily calls","kind":"quota","unit":"call","window":"calendar_day","minimum":0,"maximum":1000},
+  {"key":"request_rate","name":"Request rate","kind":"rate_limit","unit":"request","window_seconds":60,"minimum":0,"maximum":300}
+]'::jsonb
+from public.services s
+where cap.service_key = 'api'
+  and cap.key = 'api:echo'
+  and cap.catalog_version = s.active_capability_version
+  and s.key = 'api';
+
+do $$
+declare target jsonb;
+begin
+  target := public.load_usage_target_context('api', 'api:echo');
+  if target->>'resource_uri' <> 'https://api.dondone.dev'
+    or target->>'permission_key' <> 'api:echo'
+    or (target->>'permission_oauth_scope')::boolean is not true
+    or (target->>'permission_control_count')::integer <> 2 then
+    raise exception 'load_usage_target_context did not resolve the active resource Permission';
+  end if;
+  if public.load_usage_target_context('api', 'api:missing')->>'permission_key' is not null then
+    raise exception 'load_usage_target_context resolved a missing Permission';
+  end if;
+end $$;
+
+-- Verify partial unique index prevents two active groups per service
+do $$
+declare
+  caller_group uuid;
+  managed_group uuid;
+begin
+  select id into caller_group from public.permission_groups where service_key='api' and key='caller';
+  select id into managed_group from public.permission_groups where service_key='api' and key='managed';
+
+  -- User 2 already has caller active; trying to insert managed should fail
+  begin
+    insert into public.user_permission_groups(user_id, group_id, service_key, status)
+    values ('00000000-0000-0000-0000-000000000002', managed_group, 'api', 'active');
+    raise exception 'second active group per service unexpectedly succeeded';
+  exception when unique_violation then null;
+  end;
+end $$;
+
+-- Default group: set and test ensure_default_service_group
+do $$
+declare
+  caller_group uuid;
+  result uuid;
+begin
+  select id into caller_group from public.permission_groups where service_key='api' and key='caller';
+  perform public.console_set_service_default_group('api', 'caller', '00000000-0000-0000-0000-000000000001');
+
+  if (select default_group_id from public.services where key='api') <> caller_group then
+    raise exception 'default_group_id not set';
+  end if;
+
+  -- User without a group gets the default
+  select public.ensure_default_service_group('00000000-0000-0000-0000-000000000006', 'api') into result;
+  if result <> caller_group then
+    raise exception 'ensure_default_service_group did not assign default group';
+  end if;
+
+  -- Calling again is idempotent
+  select public.ensure_default_service_group('00000000-0000-0000-0000-000000000006', 'api') into result;
+  if result <> caller_group then
+    raise exception 'ensure_default_service_group not idempotent';
+  end if;
+
+  -- User with existing group keeps their group
+  select public.ensure_default_service_group('00000000-0000-0000-0000-000000000002', 'api') into result;
+  if result <> caller_group then
+    raise exception 'ensure_default_service_group replaced existing group';
+  end if;
+
+  -- Service without default returns null
+  select public.ensure_default_service_group('00000000-0000-0000-0000-000000000006', 'time') into result;
+  if result is not null then
+    raise exception 'ensure_default_service_group returned non-null for no-default service';
+  end if;
+end $$;
+
+-- Cannot disable a group that is the default
+do $$ begin
+  begin
+    update public.permission_groups set status='disabled'
+    where service_key='api' and key='caller';
+    raise exception 'disabling default group unexpectedly succeeded';
+  exception when check_violation then
+    if sqlerrm <> 'cannot_disable_default_group' then raise; end if;
+  end;
+end $$;
+
+-- Clear default before disabling works
+do $$ begin
+  perform public.console_set_service_default_group('api', null, '00000000-0000-0000-0000-000000000001');
+end $$;
+
+-- Usage policy CRUD
+do $$
+declare
+  v_policy_id uuid;
+begin
+  select public.console_upsert_usage_policy(
+    'api', 'caller-limits', 'Caller Limits', 'Default limits', 'active',
+    '[{"permission_key":"api:echo","control_key":"daily_calls","value":10},{"permission_key":"api:echo","control_key":"request_rate","value":30}]'::jsonb,
+    '00000000-0000-0000-0000-000000000001'
+  ) into v_policy_id;
+
+  if v_policy_id is null then
+    raise exception 'console_upsert_usage_policy returned null';
+  end if;
+
+  if (select count(*) from public.usage_policy_rules where policy_id = v_policy_id) <> 2 then
+    raise exception 'policy rules not created';
+  end if;
+
+  -- Upsert replaces the complete rule set
+  perform public.console_upsert_usage_policy(
+    'api', 'caller-limits', 'Caller Limits Updated', null, 'active',
+    '[{"permission_key":"api:echo","control_key":"daily_calls","value":20},{"permission_key":"api:echo","control_key":"request_rate","value":60}]'::jsonb,
+    '00000000-0000-0000-0000-000000000001'
+  );
+
+  if (select count(*) from public.usage_policy_rules where policy_id = v_policy_id) <> 2 then
+    raise exception 'upsert did not replace rules';
+  end if;
+  if (select name from public.usage_policies where id = v_policy_id) <> 'Caller Limits Updated' then
+    raise exception 'upsert did not update name';
+  end if;
+end $$;
+
+-- Policy rules must match the active catalog and be complete per Permission.
+do $$ begin
+  begin
+    perform public.console_upsert_usage_policy(
+      'api', 'incomplete-policy', 'Incomplete', null, 'active',
+      '[{"permission_key":"api:echo","control_key":"daily_calls","value":10}]'::jsonb,
+      '00000000-0000-0000-0000-000000000001');
+    raise exception 'incomplete policy unexpectedly succeeded';
+  exception when check_violation then
+    if sqlerrm <> 'usage_policy_rules_incomplete' then raise; end if;
+  end;
+
+  begin
+    perform public.console_upsert_usage_policy(
+      'api', 'unknown-control-policy', 'Unknown control', null, 'active',
+      '[{"permission_key":"api:echo","control_key":"missing","value":10}]'::jsonb,
+      '00000000-0000-0000-0000-000000000001');
+    raise exception 'unknown policy control unexpectedly succeeded';
+  exception when check_violation then
+    if sqlerrm <> 'usage_policy_control_not_found' then raise; end if;
+  end;
+
+  begin
+    perform public.console_upsert_usage_policy(
+      'api', 'out-of-range-policy', 'Out of range', null, 'active',
+      '[{"permission_key":"api:echo","control_key":"daily_calls","value":1001},{"permission_key":"api:echo","control_key":"request_rate","value":30}]'::jsonb,
+      '00000000-0000-0000-0000-000000000001');
+    raise exception 'out-of-range policy value unexpectedly succeeded';
+  exception when check_violation then
+    if sqlerrm <> 'invalid_usage_policy_rule_value' then raise; end if;
+  end;
+end $$;
+
+-- Cross-service policy rule rejected
+do $$ begin
+  begin
+    perform public.console_upsert_usage_policy(
+      'api', 'bad-policy', 'Bad', null, 'active',
+      '[{"permission_key":"console:admin","control_key":"x","value":1}]'::jsonb,
+      '00000000-0000-0000-0000-000000000001'
+    );
+    raise exception 'cross-service policy rule unexpectedly succeeded';
+  exception when check_violation then
+    if sqlerrm <> 'policy_rule_service_mismatch' then raise; end if;
+  end;
+end $$;
+
+-- Bind policy to group
+do $$ begin
+  perform public.console_upsert_usage_policy(
+    'api', 'empty-policy', 'Empty', null, 'active', '[]'::jsonb,
+    '00000000-0000-0000-0000-000000000001');
+
+  begin
+    perform public.console_bind_group_usage_policy(
+      'api', 'caller', 'empty-policy', '00000000-0000-0000-0000-000000000001');
+    raise exception 'incomplete policy binding unexpectedly succeeded';
+  exception when check_violation then
+    if sqlerrm <> 'usage_policy_incomplete_for_group' then raise; end if;
+  end;
+
+  perform public.console_bind_group_usage_policy(
+    'api', 'caller', 'caller-limits', '00000000-0000-0000-0000-000000000001');
+  if (select usage_policy_id from public.permission_groups where service_key='api' and key='caller') is null then
+    raise exception 'bind_group_usage_policy did not set policy';
+  end if;
+
+  begin
+    perform public.console_bind_group_usage_policy(
+      'api', 'caller', null, '00000000-0000-0000-0000-000000000001');
+    raise exception 'clearing a controlled active group policy unexpectedly succeeded';
+  exception when check_violation then
+    if sqlerrm <> 'usage_policy_required_for_group' then raise; end if;
+  end;
+end $$;
+
+-- Group creation and policy binding are one transaction.
+do $$ begin
+  perform public.console_create_permission_group_with_policy(
+    'api', 'atomic-controlled', 'Atomic controlled', null,
+    array['api:echo'], 'caller-limits',
+    '00000000-0000-0000-0000-000000000001');
+  if not exists (
+    select 1 from public.permission_groups
+    where service_key = 'api' and key = 'atomic-controlled' and usage_policy_id is not null
+  ) then
+    raise exception 'atomic controlled Group was not created with its policy';
+  end if;
+
+  begin
+    perform public.console_create_permission_group_with_policy(
+      'api', 'atomic-missing-policy', 'Atomic missing', null,
+      array['api:echo'], null,
+      '00000000-0000-0000-0000-000000000001');
+    raise exception 'controlled Group without a policy unexpectedly succeeded';
+  exception when check_violation then
+    if sqlerrm <> 'usage_policy_required_for_group' then raise; end if;
+  end;
+  if exists (
+    select 1 from public.permission_groups
+    where service_key = 'api' and key = 'atomic-missing-policy'
+  ) then
+    raise exception 'failed atomic Group creation left a partial Group';
+  end if;
+end $$;
+
+-- console_replace_user_permission_groups rejects same-service duplicate
+do $$
+declare
+  caller_group uuid;
+  managed_group uuid;
+begin
+  select id into caller_group from public.permission_groups where service_key='api' and key='caller';
+  select id into managed_group from public.permission_groups where service_key='api' and key='managed';
+  begin
+    perform public.console_replace_user_permission_groups(
+      '00000000-0000-0000-0000-000000000003',
+      jsonb_build_array(
+        jsonb_build_object('group_id', caller_group, 'expires_at', null),
+        jsonb_build_object('group_id', managed_group, 'expires_at', null)
+      ),
+      '00000000-0000-0000-0000-000000000001'
+    );
+    raise exception 'same-service duplicate unexpectedly succeeded';
+  exception when unique_violation then
+    if sqlerrm <> 'multiple_groups_for_service' then raise; end if;
+  end;
+end $$;
+
+-- Cross-service assignment succeeds (api + console)
+do $$
+declare
+  caller_group uuid;
+  admin_group uuid;
+begin
+  select id into caller_group from public.permission_groups where service_key='api' and key='caller';
+  select id into admin_group from public.permission_groups where service_key='console' and key='admin';
+  perform public.console_replace_user_permission_groups(
+    '00000000-0000-0000-0000-000000000003',
+    jsonb_build_array(
+      jsonb_build_object('group_id', caller_group, 'expires_at', null),
+      jsonb_build_object('group_id', admin_group, 'expires_at', null)
+    ),
+    '00000000-0000-0000-0000-000000000001'
+  );
+  if (select count(*) from public.user_permission_groups
+      where user_id='00000000-0000-0000-0000-000000000003' and status='active') <> 2 then
+    raise exception 'cross-service assignment failed';
+  end if;
+end $$;
+
+-- load_usage_decision_context returns correct structure
+do $$
+declare
+  ctx jsonb;
+begin
+  -- Re-bind policy for test
+  perform public.console_bind_group_usage_policy(
+    'api', 'caller', 'caller-limits', '00000000-0000-0000-0000-000000000001');
+
+  select public.load_usage_decision_context(
+    '00000000-0000-0000-0000-000000000003', 'api', 'api:echo'
+  ) into ctx;
+
+  if ctx->>'service_status' <> 'active' then
+    raise exception 'load_usage_decision_context service_status wrong: %', ctx;
+  end if;
+  if ctx->>'profile_status' <> 'active' then
+    raise exception 'load_usage_decision_context profile_status wrong: %', ctx;
+  end if;
+  if (ctx->>'permission_granted')::boolean is not true then
+    raise exception 'load_usage_decision_context permission_granted wrong: %', ctx;
+  end if;
+  if ctx->>'policy_key' <> 'caller-limits' then
+    raise exception 'load_usage_decision_context policy_key wrong: %', ctx;
+  end if;
+end $$;
+
+-- RLS: new tables not visible to browser roles
+do $$ begin
+  if has_table_privilege('anon', 'public.usage_policies', 'select')
+    or has_table_privilege('authenticated', 'public.usage_policies', 'select')
+    or has_table_privilege('anon', 'public.usage_policy_rules', 'select')
+    or has_table_privilege('authenticated', 'public.usage_policy_rules', 'select')
+    or has_table_privilege('anon', 'public.usage_adjustment_audit', 'select')
+    or has_table_privilege('authenticated', 'public.usage_adjustment_audit', 'select') then
+    raise exception 'browser roles can read usage policy tables';
+  end if;
+  if has_function_privilege('anon', 'public.ensure_default_service_group(uuid,text)', 'execute')
+    or has_function_privilege('authenticated', 'public.ensure_default_service_group(uuid,text)', 'execute')
+    or has_function_privilege('anon', 'public.console_upsert_usage_policy(text,text,text,text,text,jsonb,uuid)', 'execute')
+    or has_function_privilege('authenticated', 'public.console_upsert_usage_policy(text,text,text,text,text,jsonb,uuid)', 'execute')
+    or has_function_privilege('anon', 'public.load_usage_decision_context(uuid,text,text)', 'execute')
+    or has_function_privilege('authenticated', 'public.load_usage_decision_context(uuid,text,text)', 'execute') then
+    raise exception 'browser roles can execute usage policy RPCs';
+  end if;
+end $$;
+SQL
+
 echo "PostgreSQL capability registry integration test passed."

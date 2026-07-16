@@ -2,6 +2,7 @@ import { requireAdmin } from './admin-auth'
 import { ApiError } from './errors'
 import { handleCapabilitySync, recordSyncFailure } from './capability-sync'
 import { handleApprove, handleReject, handleDiffPreview } from './capability-approval'
+import { handleAdminUsageAdjust } from './usage-admin'
 import type { AuthEnv } from './types'
 
 export async function handleAdminApi(
@@ -63,6 +64,12 @@ export async function handleAdminApi(
         admin,
         body
       )
+      return jsonResponse(request, env, result)
+    }
+
+    if (request.method === 'POST' && path === 'usage/adjust') {
+      const body = await readJsonObject(request)
+      const result = await handleAdminUsageAdjust(env, admin, body)
       return jsonResponse(request, env, result)
     }
 

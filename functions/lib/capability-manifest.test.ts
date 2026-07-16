@@ -5,7 +5,9 @@ import {
   parseCapabilityManifest,
   manifestSha256,
   isOAuthScope,
+  parseUsageControls,
   type CapabilityManifest,
+  type DondoneCapabilitiesV2,
 } from './capability-manifest'
 
 function validManifestInput() {
@@ -104,7 +106,7 @@ describe('parseCapabilityManifest', () => {
 
   it('rejects unsupported schema_version', () => {
     const input = validManifestInput()
-    ;(input.dondone_capabilities as Record<string, unknown>).schema_version = 2
+    ;(input.dondone_capabilities as Record<string, unknown>).schema_version = 99
     expect(() => parseCapabilityManifest(input, 'api', 'https://api.dondone.dev')).toThrow('schema_version')
   })
 
@@ -358,6 +360,171 @@ describe('manifestSha256', () => {
     const h1 = await manifestSha256(m1)
     const h2 = await manifestSha256(m2)
     expect(h1).not.toBe(h2)
+  })
+})
+
+// ---------- schema v2 parsing ----------
+
+function validV2ManifestInput() {
+  return {
+    resource: 'https://api.dondone.dev',
+    resource_name: 'Dondone API',
+    authorization_servers: ['https://auth.dondone.dev'],
+    scopes_supported: ['api:echo'],
+    dondone_capabilities: {
+      schema_version: 2,
+      catalog_version: '2026-07-16.1',
+      permissions: [
+        {
+          key: 'api:echo',
+          name: 'Echo API',
+          description: 'Call the echo API.',
+          usage_controls: [
+            { key: 'daily_calls', name: 'Daily calls', kind: 'quota', unit: 'request', window: 'calendar_day', minimum: 0, maximum: 1000000 },
+            { key: 'request_rate', name: 'Requests per minute', kind: 'rate_limit', unit: 'request', window_seconds: 60, minimum: 0, maximum: 10000 },
+          ],
+        },
+        {
+          key: 'api:tier:vip',
+          name: 'VIP Tier',
+          description: 'Receive the VIP API response tier.',
+        },
+      ],
+      roles: [
+        { key: 'caller', name: 'Caller', permission_keys: ['api:echo'] },
+        { key: 'vip', name: 'VIP Caller', permission_keys: ['api:echo', 'api:tier:vip'] },
+      ],
+    },
+  }
+}
+
+describe('parseCapabilityManifest v2', () => {
+  it('parses a valid v2 manifest with usage controls', () => {
+    const result = parseCapabilityManifest(validV2ManifestInput(), 'api', 'https://api.dondone.dev')
+    expect(result.dondone_capabilities.schema_version).toBe(2)
+    const caps = result.dondone_capabilities as DondoneCapabilitiesV2
+    expect(caps.permissions).toHaveLength(2)
+    expect(caps.permissions[0].name).toBe('Echo API')
+    expect(caps.permissions[0].usage_controls).toHaveLength(2)
+    expect(caps.permissions[0].usage_controls![0].kind).toBe('quota')
+    expect(caps.permissions[0].usage_controls![1].kind).toBe('rate_limit')
+  })
+
+  it('accepts a v2 permission without usage_controls', () => {
+    const result = parseCapabilityManifest(validV2ManifestInput(), 'api', 'https://api.dondone.dev')
+    const caps = result.dondone_capabilities as DondoneCapabilitiesV2
+    expect(caps.permissions[1].usage_controls).toBeUndefined()
+  })
+
+  it('rejects v2 permission missing name', () => {
+    const input = validV2ManifestInput()
+    ;(input.dondone_capabilities.permissions[0] as Record<string, unknown>).name = undefined
+    expect(() => parseCapabilityManifest(input, 'api', 'https://api.dondone.dev')).toThrow('name')
+  })
+
+  it('rejects v2 permission with name > 100 chars', () => {
+    const input = validV2ManifestInput()
+    input.dondone_capabilities.permissions[0].name = 'A'.repeat(101)
+    expect(() => parseCapabilityManifest(input, 'api', 'https://api.dondone.dev')).toThrow('1-100')
+  })
+
+  it('rejects v2 permission with description > 500 chars', () => {
+    const input = validV2ManifestInput()
+    input.dondone_capabilities.permissions[0].description = 'A'.repeat(501)
+    expect(() => parseCapabilityManifest(input, 'api', 'https://api.dondone.dev')).toThrow('1-500')
+  })
+
+  it('v1 manifest still works after v2 support', () => {
+    const result = parseCapabilityManifest(validManifestInput(), 'api', 'https://api.dondone.dev')
+    expect(result.dondone_capabilities.schema_version).toBe(1)
+  })
+})
+
+describe('parseUsageControls', () => {
+  it('parses all six control kinds', () => {
+    const controls = [
+      { key: 'daily', name: 'Daily', kind: 'quota', unit: 'req', window: 'calendar_day', minimum: 0, maximum: 100 },
+      { key: 'rate', name: 'Rate', kind: 'rate_limit', unit: 'req', window_seconds: 60, minimum: 0, maximum: 50 },
+      { key: 'model', name: 'Model', kind: 'enum_one', options: [{ value: 'gpt4', label: 'GPT-4' }] },
+      { key: 'features', name: 'Features', kind: 'enum_many', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] },
+      { key: 'advanced', name: 'Advanced', kind: 'boolean' },
+      { key: 'max_tokens', name: 'Max tokens', kind: 'numeric_ceiling', unit: 'token', minimum: 1, maximum: 4096 },
+    ]
+    const result = parseUsageControls(controls, 'test:perm')
+    expect(result).toHaveLength(6)
+    expect(result.map((r) => r.kind)).toEqual(['quota', 'rate_limit', 'enum_one', 'enum_many', 'boolean', 'numeric_ceiling'])
+  })
+
+  it('rejects duplicate control keys', () => {
+    const controls = [
+      { key: 'daily', name: 'A', kind: 'quota', unit: 'req', window: 'calendar_day', minimum: 0, maximum: 100 },
+      { key: 'daily', name: 'B', kind: 'quota', unit: 'req', window: 'lifetime', minimum: 0, maximum: 100 },
+    ]
+    expect(() => parseUsageControls(controls, 'test:p')).toThrow('duplicate control key')
+  })
+
+  it('rejects invalid control key format', () => {
+    const controls = [
+      { key: 'UPPER', name: 'Bad', kind: 'boolean' },
+    ]
+    expect(() => parseUsageControls(controls, 'test:p')).toThrow('control key must match')
+  })
+
+  it('rejects quota with invalid window', () => {
+    const controls = [
+      { key: 'q', name: 'Q', kind: 'quota', unit: 'req', window: 'monthly', minimum: 0, maximum: 10 },
+    ]
+    expect(() => parseUsageControls(controls, 'test:p')).toThrow('calendar_day')
+  })
+
+  it('rejects rate_limit with invalid window_seconds', () => {
+    const controls = [
+      { key: 'r', name: 'R', kind: 'rate_limit', unit: 'req', window_seconds: 30, minimum: 0, maximum: 10 },
+    ]
+    expect(() => parseUsageControls(controls, 'test:p')).toThrow('window_seconds')
+  })
+
+  it('rejects maximum > 1 billion', () => {
+    const controls = [
+      { key: 'q', name: 'Q', kind: 'quota', unit: 'req', window: 'calendar_day', minimum: 0, maximum: 1_000_000_001 },
+    ]
+    expect(() => parseUsageControls(controls, 'test:p')).toThrow('1000000000')
+  })
+
+  it('rejects numeric_ceiling with minimum > maximum', () => {
+    const controls = [
+      { key: 'c', name: 'C', kind: 'numeric_ceiling', unit: 'x', minimum: 100, maximum: 10 },
+    ]
+    expect(() => parseUsageControls(controls, 'test:p')).toThrow('minimum must be <= maximum')
+  })
+
+  it('rejects enum with duplicate option values', () => {
+    const controls = [
+      { key: 'e', name: 'E', kind: 'enum_one', options: [{ value: 'a', label: 'A' }, { value: 'a', label: 'A2' }] },
+    ]
+    expect(() => parseUsageControls(controls, 'test:p')).toThrow('duplicate option value')
+  })
+
+  it('rejects enum with empty options', () => {
+    const controls = [
+      { key: 'e', name: 'E', kind: 'enum_one', options: [] },
+    ]
+    expect(() => parseUsageControls(controls, 'test:p')).toThrow('1-100')
+  })
+
+  it('rejects unknown kind', () => {
+    const controls = [
+      { key: 'x', name: 'X', kind: 'unknown_kind' },
+    ]
+    expect(() => parseUsageControls(controls, 'test:p')).toThrow('invalid kind')
+  })
+
+  it('accepts optional description on controls', () => {
+    const controls = [
+      { key: 'b', name: 'B', kind: 'boolean', description: 'Toggle feature' },
+    ]
+    const result = parseUsageControls(controls, 'test:p')
+    expect(result[0].description).toBe('Toggle feature')
   })
 })
 

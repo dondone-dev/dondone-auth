@@ -1,0 +1,11 @@
+name = "dondone-auth-usage"
+main = "src/index.ts"
+compatibility_date = "2026-07-16"
+
+[[durable_objects.bindings]]
+name = "USAGE_LEDGER"
+class_name = "UsageLedger"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UsageLedger"]

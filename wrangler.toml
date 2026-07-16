@@ -13,3 +13,8 @@ ADMIN_ALLOWED_ORIGINS = "https://console.dondone.dev"
 [[kv_namespaces]]
 binding = "AUTH_CODES" # simple-auth-codes
 id = "5e97806b185044c99c982330b88aba61"
+
+[[durable_objects.bindings]]
+name = "USAGE_LEDGER"
+class_name = "UsageLedger"
+script_name = "dondone-auth-usage"

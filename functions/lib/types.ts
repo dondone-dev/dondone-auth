@@ -7,6 +7,7 @@ export interface AuthEnv {
   DONDONE_JWT_KID: string
   DONDONE_JWT_ISSUER: string
   ADMIN_ALLOWED_ORIGINS?: string
+  USAGE_LEDGER?: DurableObjectNamespace
 }
 
 export interface AuthApp {
