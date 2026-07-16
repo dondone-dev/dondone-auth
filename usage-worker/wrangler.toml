@@ -2,6 +2,10 @@ name = "dondone-auth-usage"
 main = "src/index.ts"
 compatibility_date = "2026-07-16"
 
+[observability.logs]
+enabled = false
+invocation_logs = true
+
 [[durable_objects.bindings]]
 name = "USAGE_LEDGER"
 class_name = "UsageLedger"
