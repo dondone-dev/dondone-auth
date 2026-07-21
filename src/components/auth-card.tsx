@@ -7,18 +7,14 @@ import {
   TurnstileWidget,
   type TurnstileHandle,
 } from '@/components/turnstile-widget'
+import { config } from '@/config'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
-// Turnstile site keys are public (embedded in the served page), so the
-// production key is committed as the default. VITE_TURNSTILE_SITE_KEY overrides
-// it — e.g. the test key 1x00000000000000000000AA in local dev.
-const TURNSTILE_SITE_KEY =
-  (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined) ||
-  '0x4AAAAAAD6WmBBhTPOCE2qy'
+const TURNSTILE_SITE_KEY = config.turnstileSiteKey
 
 interface AuthCardProps {
   email: string

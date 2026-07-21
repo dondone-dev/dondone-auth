@@ -31,9 +31,9 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { config } from '@/config'
 
-const API_BASE =
-  (import.meta.env.VITE_API_BASE as string | undefined) ?? 'https://api.dondone.dev'
+const API_BASE = config.apiBase
 
 const DEBUG_STORAGE_KEY = 'dondone.debug'
 const MAX_DEBUG_ENTRIES = 20
