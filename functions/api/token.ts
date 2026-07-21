@@ -94,7 +94,12 @@ export async function handleToken(
       resource: record.resource,
       scopes: validScopes,
     })
-    return jsonResponse(request, env, { ...record.session, ...apiToken })
+    // Do not hand the long-lived Supabase refresh token to downstream clients:
+    // the scoped `at+jwt` is the intended delegated credential. Only the
+    // short-lived Supabase access token (for identity/email) is passed through
+    // alongside the resource-bound API token.
+    const { access_token, expires_at, token_type } = record.session
+    return jsonResponse(request, env, { access_token, expires_at, token_type, ...apiToken })
   } catch (error) {
     return errorResponse(request, env, error)
   }

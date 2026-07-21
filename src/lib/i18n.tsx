@@ -33,6 +33,8 @@ const dictionaries = {
     'authz.continueDescWithEmail': '你已登录为 {email}，可直接返回应用。',
     'authz.continueDesc': '你已登录，可直接返回应用。',
     'authz.continueAction': '继续并返回 {origin}',
+    'authz.grantsLabel': '此应用将获得以下权限：',
+    'authz.resourceLabel': '资源：{host}',
     'authz.failed': '授权失败：{message}',
     'authz.noSession': '当前没有有效会话。',
 
@@ -101,6 +103,8 @@ const dictionaries = {
     'authz.continueDesc':
       "You're signed in. You can head straight back to the app.",
     'authz.continueAction': 'Continue to {origin}',
+    'authz.grantsLabel': 'This app is requesting the following access:',
+    'authz.resourceLabel': 'Resource: {host}',
     'authz.failed': 'Authorization failed: {message}',
     'authz.noSession': 'No active session.',
 

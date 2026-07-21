@@ -221,10 +221,14 @@ function App() {
     setPending(null)
   }
 
-  async function signUp() {
+  async function signUp(captchaToken?: string) {
     setNotice(null)
     setPending('signUp')
-    const { data, error } = await supabase.auth.signUp({ email, password })
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { captchaToken },
+    })
     setPending(null)
     logDebug('auth.signUp', error ?? data)
 
@@ -244,12 +248,13 @@ function App() {
     }
   }
 
-  async function signIn() {
+  async function signIn(captchaToken?: string) {
     setNotice(null)
     setPending('signIn')
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
+      options: { captchaToken },
     })
     setSession(data.session)
     logDebug('auth.signInWithPassword', error ?? data)
@@ -396,7 +401,29 @@ function App() {
                         : t('authz.continueDesc')}
                     </CardDescription>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="flex flex-col gap-4">
+                    {(authorizationRequest.scope || authorizationRequest.resource) && (
+                      <div className="rounded-lg border bg-muted/40 p-3 text-sm">
+                        <p className="mb-2 font-medium">{t('authz.grantsLabel')}</p>
+                        {authorizationRequest.scope && (
+                          <ul className="flex flex-col gap-1">
+                            {authorizationRequest.scope.split(' ').map((scope) => (
+                              <li key={scope} className="flex items-center gap-2">
+                                <CircleCheck className="size-3.5 shrink-0 text-primary" />
+                                <code className="font-mono text-xs">{scope}</code>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {authorizationRequest.resource && (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            {t('authz.resourceLabel', {
+                              host: originOf(authorizationRequest.resource),
+                            })}
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <Button
                       className="w-full"
                       onClick={continueAuthorization}

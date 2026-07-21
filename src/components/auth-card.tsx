@@ -1,12 +1,24 @@
+import { useRef, useState } from 'react'
 import { Fingerprint, KeyRound, Mail, RefreshCw } from 'lucide-react'
 import type { OAuthProvider, Pending } from '@/lib/types'
 import { useI18n } from '@/lib/i18n'
 import { GitHubIcon, GoogleIcon } from '@/components/brand-icons'
+import {
+  TurnstileWidget,
+  type TurnstileHandle,
+} from '@/components/turnstile-widget'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+
+// Turnstile site keys are public (embedded in the served page), so the
+// production key is committed as the default. VITE_TURNSTILE_SITE_KEY overrides
+// it — e.g. the test key 1x00000000000000000000AA in local dev.
+const TURNSTILE_SITE_KEY =
+  (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined) ||
+  '0x4AAAAAAD6WmBBhTPOCE2qy'
 
 interface AuthCardProps {
   email: string
@@ -15,8 +27,8 @@ interface AuthCardProps {
   oauthPending: OAuthProvider | null
   onEmailChange: (value: string) => void
   onPasswordChange: (value: string) => void
-  onSignIn: () => void
-  onSignUp: () => void
+  onSignIn: (captchaToken?: string) => void
+  onSignUp: (captchaToken?: string) => void
   onOAuth: (provider: OAuthProvider) => void
   onPasskey: () => void
 }
@@ -36,6 +48,22 @@ export function AuthCard({
   const { t } = useI18n()
   const credentialsMissing = !email || !password
   const busy = pending !== null || oauthPending !== null
+
+  // CAPTCHA is enforced only when a Turnstile site key is configured; without
+  // it the widget never renders and the flow is unchanged.
+  const [captchaToken, setCaptchaToken] = useState<string>()
+  const turnstileRef = useRef<TurnstileHandle>(null)
+  const captchaMissing = Boolean(TURNSTILE_SITE_KEY) && !captchaToken
+
+  // Turnstile tokens are single-use, so consume the current token and arm a
+  // fresh challenge on every email/password attempt.
+  function submitWithCaptcha(action: (captchaToken?: string) => void) {
+    action(captchaToken)
+    if (TURNSTILE_SITE_KEY) {
+      turnstileRef.current?.reset()
+      setCaptchaToken(undefined)
+    }
+  }
 
   return (
     <Card>
@@ -80,11 +108,19 @@ export function AuthCard({
             </div>
           </div>
 
+          {TURNSTILE_SITE_KEY && (
+            <TurnstileWidget
+              ref={turnstileRef}
+              siteKey={TURNSTILE_SITE_KEY}
+              onToken={setCaptchaToken}
+            />
+          )}
+
           <TabsContent value="signIn">
             <Button
               className="w-full"
-              onClick={onSignIn}
-              disabled={credentialsMissing || busy}
+              onClick={() => submitWithCaptcha(onSignIn)}
+              disabled={credentialsMissing || busy || captchaMissing}
             >
               {pending === 'signIn' && (
                 <RefreshCw className="size-4 animate-spin" />
@@ -96,8 +132,8 @@ export function AuthCard({
           <TabsContent value="signUp">
             <Button
               className="w-full"
-              onClick={onSignUp}
-              disabled={credentialsMissing || busy}
+              onClick={() => submitWithCaptcha(onSignUp)}
+              disabled={credentialsMissing || busy || captchaMissing}
             >
               {pending === 'signUp' && (
                 <RefreshCw className="size-4 animate-spin" />

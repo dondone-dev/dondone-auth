@@ -158,7 +158,8 @@ describe('POST /api/token', () => {
 
     expect(response.status).toBe(200)
     expect(body.access_token).toBe(session.access_token)
-    expect(body.refresh_token).toBe(session.refresh_token)
+    // The long-lived Supabase refresh token must never be handed downstream.
+    expect(body.refresh_token).toBeUndefined()
     expect(body.expires_at).toBe(session.expires_at)
     expect(body.token_type).toBe(session.token_type)
     expect(body.api_token_type).toBe('Bearer')
