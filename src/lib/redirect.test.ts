@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createAuthorizationRedirect, parseAuthorizationRequest } from './redirect'
+import { createAuthorizationRedirect, isSupabaseOAuthCallback, parseAuthorizationRequest } from './redirect'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -25,5 +25,31 @@ describe('resource-aware authorization redirect', () => {
       resource: 'https://api.dondone.dev', scope: 'api:echo',
     }, { access_token: 'a', refresh_token: 'r', expires_at: 1, token_type: 'bearer' } as never)
     expect(fetchMock).toHaveBeenCalledOnce()
+  })
+})
+
+describe('isSupabaseOAuthCallback', () => {
+  it('detects PKCE OAuth returns via query code', () => {
+    vi.stubGlobal('window', {
+      location: { search: '?client_id=time&code=supabase-auth-code', hash: '' },
+    })
+    expect(isSupabaseOAuthCallback()).toBe(true)
+  })
+
+  it('detects implicit OAuth returns via hash access_token', () => {
+    vi.stubGlobal('window', {
+      location: { search: '?client_id=time', hash: '#access_token=abc' },
+    })
+    expect(isSupabaseOAuthCallback()).toBe(true)
+  })
+
+  it('returns false for a normal authorization entry URL', () => {
+    vi.stubGlobal('window', {
+      location: {
+        search: '?client_id=time&redirect_uri=https%3A%2F%2Ftime.dondone.dev%2Fauth%2Fcallback&state=s&code_challenge=c',
+        hash: '',
+      },
+    })
+    expect(isSupabaseOAuthCallback()).toBe(false)
   })
 })

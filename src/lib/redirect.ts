@@ -65,6 +65,13 @@ export function originOf(url: string): string {
   return new URL(url).origin
 }
 
+/** True when the URL looks like a Supabase OAuth return (implicit hash or PKCE code). */
+export function isSupabaseOAuthCallback(): boolean {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  if (hash.has('access_token')) return true
+  return new URLSearchParams(window.location.search).has('code')
+}
+
 export async function createAuthorizationRedirect(
   request: AuthorizationRequest,
   session: Session

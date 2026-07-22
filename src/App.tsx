@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import {
   createAuthorizationRedirect,
   hasAuthorizationParams,
+  isSupabaseOAuthCallback,
   originOf,
   parseAuthorizationRequest,
 } from '@/lib/redirect'
@@ -80,6 +81,7 @@ function App() {
   )
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([])
   const debugEntryId = useRef(0)
+  const oauthCallbackRef = useRef(isSupabaseOAuthCallback())
 
   // 来访时携带的授权请求参数。真正的 client/redirect 白名单由 /api/authorize 校验。
   const [authorizationRequest] = useState(() => parseAuthorizationRequest())
@@ -114,8 +116,17 @@ function App() {
       setSession(data.session)
     })
 
-    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession)
+      if (
+        nextSession &&
+        authorizationRequest &&
+        oauthCallbackRef.current &&
+        (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')
+      ) {
+        oauthCallbackRef.current = false
+        void continueAuthorization()
+      }
     })
 
     return () => {
